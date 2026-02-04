@@ -193,7 +193,7 @@ ncclResult_t ncclGetVersion(int* version) {
 
 // 获取唯一的通信 ID
 // 这个 ID 用于在多个进程/节点间建立通信连接
-// 进程 0 调用 ncclGetUniqueId 获取 ID，然后通过其他机制（如 MPI）传递给其他进程
+// root进程调用 ncclGetUniqueId 获取 ID，然后通过其他机制（如 MPI）传递给其他进程
 NCCL_API(ncclResult_t, ncclGetUniqueId, ncclUniqueId* out);
 ncclResult_t ncclGetUniqueId(ncclUniqueId* out) {
   // 首先确保 NCCL 已经初始化

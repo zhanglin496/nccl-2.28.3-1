@@ -16,6 +16,8 @@ static constexpr const nvtxPayloadEnum_t NvtxEnumRedSchema[] = {
   {"Avg", ncclAvg, 0}
 };
 
+//The NVIDIA Tools Extension SDK (NVTX) 
+//
 NCCL_PARAM(NvtxDisable, "NVTX_DISABLE", 0);
 
 // Must be called before the first call to any reduction operation.
