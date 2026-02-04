@@ -194,7 +194,8 @@ ncclResult_t ncclNvlsInit(struct ncclComm* comm) {
     } else {
       channels = NVLS_NCHANNELS_SM90;
     }
-    if (comm->config.nvlsCTAs != NCCL_CONFIG_UNDEF_INT) channels = comm->config.nvlsCTAs;
+    if (comm->config.nvlsCTAs != NCCL_CONFIG_UNDEF_INT) 
+        channels = comm->config.nvlsCTAs;
     comm->nvlsChannels = std::max(comm->config.minCTAs, std::min(comm->config.maxCTAs, channels));
   }
   INFO(NCCL_INIT, "NVLS multicast support is %savailable on dev %d (NVLS_NCHANNELS %d)",

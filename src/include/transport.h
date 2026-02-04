@@ -51,6 +51,7 @@ struct ncclPeerInfo {
   //检查是否是同一个进程
   uint64_t pidHash;
 
+//共享内存设备号
   dev_t shmDev;
   //gpu的busid号
   int64_t busId;
@@ -60,10 +61,12 @@ struct ncclPeerInfo {
   int cudaCompCap;
   //全局显存
   size_t totalGlobalMem;
-  //
+  //mulit-node nvlink
   // MNNVL support，多节点nvlink
   nvmlGpuFabricInfoV_t fabricInfo;
+  //是否启用了cumem，这里只表示尝试启用，不代表硬件一定支持cumem
   int cuMemSupport;
+  //nccl的版本号
   int version;
 };
 

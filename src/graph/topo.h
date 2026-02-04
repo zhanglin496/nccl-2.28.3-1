@@ -12,6 +12,7 @@
 #include "xml.h"
 #include "net.h"
 
+//GB/s
 #define LOC_BW 5000.0
 #define SM60_NVLINK_BW 18.0
 #define SM70_NVLINK_BW 20.0
@@ -200,7 +201,7 @@ struct ncclTopoNodeSet {
 struct ncclTopoSystem {
    //系统id
   int systemId;
-   //存储主机的hash值，最大576
+   //存储主机的hash值，最大576个
   uint64_t hostHashes[NCCL_TOPO_MAX_NODES];
    //主机的实际数量
   int nHosts;

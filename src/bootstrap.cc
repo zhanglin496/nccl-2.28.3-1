@@ -526,16 +526,19 @@ struct unexConn {
 
 struct bootstrapRing_t {
   union {
+    //net插件
     struct {
       void *sendComm, *recvComm;
       ncclNetDeviceHandle_t *sendDevHandle, *recvDevHandle;
     } net;
+    //传统tcp套接字
     struct {
       struct ncclSocket recv;
       struct ncclSocket send;
     } socket;
   };
 };
+
 struct bootstrapListen_t {
   struct ncclSocket peerSocket; // socket for peers to contact me in P2P
   union {
@@ -549,9 +552,9 @@ struct bootstrapListen_t {
 };
 
 struct bootstrapState {
-  //next rank的ring地址信息
+  //perv 和 next peer rank的ring地址信息到保存在这里
   struct bootstrapRing_t ring;
-  
+  //监听信息，用于等待接收root发送的next peer ring地址
   struct bootstrapListen_t listen;
   
   //指向net插件
@@ -561,10 +564,14 @@ struct bootstrapState {
   //保存所有rank的地址，指向数组的地址
   union ncclSocketAddress* peerProxyAddresses;
   union ncclSocketAddress* peerP2pAddresses;
- 
+
+  //非预期连接队列
   struct unexConn* unexpectedConnections;
+  //cuda设备号
   int cudaDev;
+  //本rank号
   int rank;
+  //总rank数
   int nranks;
   uint64_t magic;
   volatile uint32_t* abortFlag;
@@ -1205,6 +1212,7 @@ static ncclResult_t socketRingAllGather(struct ncclSocket* sendSock, struct nccl
   TRACE(NCCL_BOOTSTRAP, "socketRingAllGather started");
   BOOTSTRAP_PROF_OPEN(tFirst);
 
+//如果只有一个rank，不需要同步数据
    //总共迭代nranks - 1轮，因为每个rank都拥有自己rank号的本地数据，只需要同步其余数据
   for (int i = 0; i < nranks - 1; i++) {
     //接收数据时按照rank号递减接收，比如有4个rank，rank0就按照rank号3->2->1接收数据
@@ -1230,6 +1238,7 @@ exit:
 ncclResult_t bootstrapAllGather(void* commState, void* allData, int size) {
   ncclResult_t res = ncclSuccess;
   struct bootstrapState* state = (struct bootstrapState*)commState;
+  //rank信息，allgather根据这个信息才能知道要迭代多少轮
   int rank = state->rank;
   int nranks = state->nranks;
 

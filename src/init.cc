@@ -664,7 +664,7 @@ static ncclResult_t fillInfo(struct ncclComm* comm, struct ncclPeerInfo* info, u
   // communication in a container environment
   //内存盘，共享内存，用于进程间共享数据
   struct stat statbuf;
-  //获取设备号
+  //获取共享内存的设备号
   SYSCHECK(stat("/dev/shm", &statbuf), "stat");
   info->shmDev = statbuf.st_dev;
 
@@ -675,6 +675,7 @@ static ncclResult_t fillInfo(struct ncclComm* comm, struct ncclPeerInfo* info, u
   NCCLCHECK(ncclGpuGdrSupport(comm, &info->gdrSupport));
   
   info->comm = comm;
+  //设置计算能力
   info->cudaCompCap = comm->minCompCap = comm->maxCompCap = comm->compCap;
 
   // MNNVL support
@@ -829,6 +830,7 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
   ncclResult_t ret = ncclSuccess;
   int rank = comm->rank;
   int nranks = comm->nRanks;
+  //统计有少个不同的节点
   int nNodes = 1;
   cpu_set_t affinitySave;
   
@@ -878,16 +880,17 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
   //填充本rank的peerinfo信息
   NCCLCHECKGOTO(fillInfo(comm, comm->peerInfo+rank, comm->commHash), ret, fail);
 
-  //同步所有rank的peerinfo信息，包含重要的cudadev和rank号
+  //调用bootstrap同步所有rank的peerinfo信息，包含重要的cudadev和rank号
   NCCLCHECKGOTO(bootstrapAllGather(comm->bootstrap, comm->peerInfo, sizeof(struct ncclPeerInfo)), ret, fail);
+  //同步完成
   __atomic_store_n(&comm->peerInfoValid, true, __ATOMIC_RELEASE);
 
 //先假设支持cumem
   comm->cuMemSupport = 1;
 
-  //同一个通信组内的都会各自校验
+  //同一个通信组内的都会各自校验参数有效性
   for (int i = 0; i < nranks; i++) {
-    //要求nccl版本一致
+    //要求nccl版本号必须一致
     if (comm->peerInfo[i].version != comm->peerInfo[rank].version) {
       WARN("Mismatched NCCL version detected : rank %d version %d rank %d version %d",
            i, comm->peerInfo[i].version, rank, comm->peerInfo[rank].version);
@@ -925,9 +928,10 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
 
   do {
     // Compute intra-process ranks
+    //统计节点内的rank
     int intraProcRank0 = -1, intraProcRank = -1, intraProcRanks = 0;
 
-    //统计最小和最大能力集
+    //统计组内gpu最小和最大能力集
     for (int i = 0; i < nranks; i++) 
         comm->minCompCap = std::min(comm->minCompCap, comm->peerInfo[i].cudaCompCap);
     for (int i = 0; i < nranks; i++) 
@@ -935,7 +939,7 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
 
     comm->nvlsRegSupport = 1;
     for (int i = 0; i < nranks; i++) {
-        //检查同一个物理节点的同一个进程中启动了多个comm
+        //检查同一个物理节点内的同一个进程或者多线程中启动了多个comm
       if ((comm->peerInfo[i].hostHash == comm->peerInfo[rank].hostHash)
           && (comm->peerInfo[i].pidHash == comm->peerInfo[rank].pidHash)) {
         // Rank is in same process
@@ -958,7 +962,7 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
       
       if (comm->nvlsRegSupport) {
         //同一个进程内启动了多个comm
-        //不支持nvlink注册
+        //不支持nvlinksharp注册
         for (int j = i + 1; j < nranks; j++) {
           if (comm->peerInfo[i].hostHash == comm->peerInfo[j].hostHash &&
             comm->peerInfo[i].pidHash == comm->peerInfo[j].pidHash) {
@@ -986,7 +990,8 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
     }
     struct ncclComm* comm0 = comm->peerInfo[intraProcRank0].comm;
     assert(intraProcRank==0 ? comm==comm0 : true);
-    
+
+    //这里intraComm0可能会指向自己，比如每个gpu一个进程的工作模式
     comm->intraComm0 = comm0;
     comm->intraRank = intraProcRank;
     comm->intraRanks = intraProcRanks;
@@ -1084,7 +1089,7 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
   collNetDirectGraph->collNet = 1;
   collNetDirectGraph->minChannels = 1;
   collNetDirectGraph->maxChannels = MAXCHANNELS;
-  //是否支持collnet
+  //如果支持collnet，计算collnet拓扑
   if (comm->config.collnetEnable) {
     NCCLCHECKGOTO(ncclTopoCompute(comm->topo, collNetChainGraph), ret, fail);
     NCCLCHECKGOTO(ncclTopoPrintGraph(comm->topo, collNetChainGraph), ret, fail);
@@ -1477,6 +1482,7 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
     NCCLCHECKGOTO(ncclProxyCallBlocking(comm, &proxyConn, ncclProxyMsgSharedInit, &comm->p2pnChannels, sizeof(int), NULL, 0), ret, fail);
 
     // Then to remote ones when using PXN
+    //禁止借助非本地网卡进行跨节点通信，转而通过 NVLink 经由中间 GPU 中转数据。
     if (ncclPxnDisable(comm) == 0) {
       int nranks;
       NCCLCHECKGOTO(ncclTopoGetPxnRanks(comm, &pxnPeers, &nranks), ret, fail);

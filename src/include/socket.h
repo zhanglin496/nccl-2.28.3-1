@@ -52,9 +52,9 @@ enum ncclSocketType {
 };
 
 struct ncclSocket {
-    //监听的fd
+  //监听的fd
   int fd;
-    //accept返回的fd
+  //accept返回的fd
   int acceptFd;
   int errorRetries;
   //监听地址

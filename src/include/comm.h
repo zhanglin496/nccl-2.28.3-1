@@ -489,7 +489,7 @@ struct ncclComm {
 
   struct ncclProxyConnector* gproxyConn;
   struct ncclIntruQueue<struct ncclCommCallback, &ncclCommCallback::next> legacyRegCleanupQueue;
-  //peerInfo信息是否同步完成
+  //标记peerInfo信息是否同步完成
   bool peerInfoValid;
 
   //插件网络通信
@@ -534,6 +534,7 @@ struct ncclComm {
   bool initAlgoChannels[NCCL_NUM_ALGORITHMS];
   bool runtimeConn; // if dynamic connection is supported
   bool directMode;
+  //是否支持cumem
   int cuMemSupport;
 
   uint64_t magic; // Magic number for all network communication. Not a security key -- only goal is to detect mismatches.
@@ -546,8 +547,10 @@ struct ncclComm {
   //当前通信组内gpu的数量，也就是总的rank数量
   int nRanks;  // number of GPUs in communicator
   
-  //通信器绑定的gpu设备索引号
+  //通信器绑定的cuda gpu设备索引号
   int cudaDev; // my cuda device index
+  //NVML 是 NVIDIA Management Library，
+  //这是 NVML 设备索引，即 GPU 在 NVML 下枚举中的编号（0, 1, 2, ...）。
   int nvmlDev; // my nvml device index
   
   //gpu的计算能力，通过调用ncclCudaCompCap
@@ -617,6 +620,7 @@ struct ncclComm {
   // Channels for collectives
   int nChannels; // connection nChannels
   int collChannels; // enqueue nChannels
+  //NVLink SHARP通道数
   int nvlsChannels; // enqueue nChannels
   // all nvls heads stored to check if we can splitShare
   int nvlsHeads[MAXCHANNELS];
@@ -666,6 +670,7 @@ struct ncclComm {
   uint32_t workFifoConsumed;
 
   // Intra-process sync
+  //节点内
   struct ncclComm* intraComm0; // leader of intra-process comms (self possible)
   struct ncclComm* intraNext; // next of intra-process comms, intraComm0 is head
   
@@ -692,6 +697,7 @@ struct ncclComm {
   struct ncclCollNetSharedRes* collNetSharedRes;
 
   // NVLink SHARP (NVLS) support
+  //是否支持NVLink SHARP
   int nvlsSupport;
   int nvlsRegSupport;
   /* sharable NVLS resource. */
@@ -747,8 +753,10 @@ struct ncclComm {
   bool shareResources;
 
   // Tuning plugin
+  //调优插件
   int tunerPluginLoaded;
   ncclTuner_t* tuner;
+  //调优插件上下文
   void *tunerContext;
 
   // Profiler plugin

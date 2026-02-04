@@ -49,10 +49,12 @@ ncclResult_t ncclTunerPluginLoad(struct ncclComm* comm) {
 
   if (tunerPluginLoadSuccess == status) {
     comm->tuner = tunerSymbol;
+    //应用计数++，处理多线程的情况
     ++tunerPluginRefCount;
     goto exit;
   }
 
+//指定了环境变量
   if ((tunerName = ncclGetEnv("NCCL_TUNER_PLUGIN")) != nullptr) {
     INFO(NCCL_ENV|NCCL_TUNING, "NCCL_TUNER_PLUGIN set by environment to %s", tunerName);
     if (strcasecmp(tunerName, "none") == 0)
@@ -60,6 +62,7 @@ ncclResult_t ncclTunerPluginLoad(struct ncclComm* comm) {
   }
   tunerPluginLib = ncclOpenTunerPluginLib(tunerName);
   if (nullptr == tunerPluginLib) {
+    //把net插件赋值给tunner？？
     tunerPluginLib = ncclGetNetPluginLib(ncclPluginTypeTuner);
     if (nullptr == tunerPluginLib) {
       goto fail;
@@ -69,6 +72,7 @@ ncclResult_t ncclTunerPluginLoad(struct ncclComm* comm) {
     tunerName = ncclPluginLibPaths[ncclPluginTypeTuner];
   }
 
+//按版本高低解析符号
   tunerSymbol = getNcclTuner_v5(tunerPluginLib);
   if (tunerSymbol == NULL) {
     tunerSymbol = getNcclTuner_v4(tunerPluginLib);
@@ -85,8 +89,11 @@ ncclResult_t ncclTunerPluginLoad(struct ncclComm* comm) {
   }
   if (tunerName) INFO(NCCL_INIT|NCCL_TUNING, "Successfully loaded external tuner plugin %s", tunerName);
 
+//赋值给通信器
   comm->tuner = tunerSymbol;
+//引用计数++
   ++tunerPluginRefCount;
+  //加载成功
   status = tunerPluginLoadSuccess;
   comm->tunerPluginLoaded = 1;
 

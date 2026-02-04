@@ -66,24 +66,33 @@ static void* openPluginLib(enum ncclPluginType type, const char* libName) {
   char openErrStr[MAX_STR_LEN + 1] = { 0 };
   char eNoEntNameList[PATH_MAX] = { 0 };
 
+//没有指定插件名称，则尝试加载内部自定义前缀插件
   if (libName && strlen(libName)) {
     snprintf(libName_, MAX_STR_LEN, "%s", libName);
   } else {
+  //拼接库名称，默认加载
     snprintf(libName_, MAX_STR_LEN, "%s.so", pluginPrefix[type]);
   }
 
+//第一次尝试加载
   libHandles[type] = tryOpenLib(libName_, &openErr, openErrStr);
+  //加载成功
   if (libHandles[type]) {
     libNames[type] = strdup(libName_);
+    //获取库的绝对路径
     ncclPluginLibPaths[type] = getLibPath(libHandles[type]);
     return libHandles[type];
   }
+
+  //加载失败
   if (openErr == ENOENT) {
     appendNameToList(eNoEntNameList, &len, libName_);
   } else {
     INFO(subsys[type], "%s/Plugin: %s: %s", pluginNames[type], libName_, openErrStr);
   }
 
+  //这里代码的目的是运行用户配置提供基础名称，自动构建完整库名，比如libName="ib"
+   //则构建为libnccl-net-ib.so
   // libName can't be a relative or absolute path (start with '.' or contain any '/'). It can't be a library name either (start with 'lib' or end with '.so')
   if (libName && strlen(libName) && strchr(libName, '/') == nullptr &&
       (strncmp(libName, "lib", strlen("lib")) || strlen(libName) < strlen(".so") ||
@@ -107,6 +116,7 @@ static void* openPluginLib(enum ncclPluginType type, const char* libName) {
     INFO(subsys[type], "%s/Plugin: Could not find:%s%s%s", pluginNames[type], eNoEntNameList,
          (strlen(pluginFallback[type]) > 0 ? ". " : ""), pluginFallback[type]);
   } else if (strlen(pluginFallback[type])) {
+    //tunner插件，使用内部调优插件
     INFO(subsys[type], "%s/Plugin: %s", pluginNames[type], pluginFallback[type]);
   }
   return nullptr;

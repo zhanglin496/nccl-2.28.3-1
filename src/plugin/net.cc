@@ -39,6 +39,7 @@ int ncclNetVersion[NCCL_NET_VERSION_COUNT] = {11, 10, 9, 8, 7, 6};
 getNcclNet_t* getNcclNet[NCCL_NET_VERSION_COUNT] = {getNcclNet_v11, getNcclNet_v10, getNcclNet_v9, getNcclNet_v8, getNcclNet_v7, getNcclNet_v6};
 getNcclCollNet_t* getNcclCollNet[NCCL_NET_VERSION_COUNT] = {getNcclCollNet_v11, getNcclCollNet_v10, getNcclCollNet_v9, getNcclCollNet_v8, getNcclCollNet_v7, getNcclCollNet_v6};
 
+//2个自定义内部插件
 #define NCCL_NET_NUM_INTERNAL_PLUGINS 2
 
 typedef enum ncclNetPluginState {
@@ -86,9 +87,10 @@ static ncclResult_t ncclNetPluginUnload(netPluginLib_t* pluginLib) {
 }
 
 static ncclResult_t ncclNetPluginLoad(netPluginLib_t* pluginLib) {
-  //dlopen对应的库，用于后续解析符号
+  //dlopen对应的插件库，用于后续解析符号
   pluginLib->dlHandle = ncclOpenNetPluginLib(pluginLib->name);
 
+//插件不存在，返回
   if (pluginLib->dlHandle == nullptr) 
     goto fail;
   
@@ -96,11 +98,14 @@ static ncclResult_t ncclNetPluginLoad(netPluginLib_t* pluginLib) {
   //从高版本到低版本依次尝试加载ncclnet
   for (int i = 0; i < NCCL_NET_VERSION_COUNT; i++) {
     pluginLib->ncclNetVer = ncclNetVersion[i];
+    //从handle中解析符号
     pluginLib->ncclNet = getNcclNet[i](pluginLib->dlHandle);
+  //解析成功
     if (pluginLib->ncclNet) 
         break;
   }
 
+//符号解析失败，返回
   // if we fail to find a net, exit
   //这里意味者插件必须先实现net，否则也不会加载后面的collnet
   if (pluginLib->ncclNet == nullptr) {
@@ -135,6 +140,7 @@ fail:
     NCCLCHECK(ncclClosePluginLib(pluginLib->dlHandle, ncclPluginTypeNet));
   }
   pluginLib->dlHandle = nullptr;
+  //设置状态
   pluginLib->ncclNetPluginState = ncclNetPluginStateLoadFailed;
   pluginLib->ncclCollNetPluginState = ncclNetPluginStateLoadFailed;
   goto exit;
@@ -220,6 +226,7 @@ static ncclResult_t ncclNetPluginAssignToComm(struct ncclComm* comm, int pluginI
     comm->ncclNet = netPluginLibs[pluginIndex].ncclNet;
     comm->ncclNetVer = netPluginLibs[pluginIndex].ncclNetVer;
     comm->netPluginIndex = pluginIndex;
+    //增加应用计数，用于多线程的情况
     netPluginLibs[pluginIndex].ncclNetPluginRefCount++;
     *isAssigned = true;
     INFO(NCCL_INIT|NCCL_NET, "Assigned NET plugin %s to comm", netPluginLibs[pluginIndex].ncclNet->name);
@@ -302,7 +309,7 @@ static void initPluginLibsOnceFunc() {
         free(envNetPluginList);
   } else {
     // Add default net plugin
-    //设置为默认的plugin，libnccl-net.so
+    //设置libnccl-net.so为默认的plugin
     netPluginLibs[pluginCounter].ncclNetPluginState = ncclNetPluginStateLoadReady;
     netPluginLibs[pluginCounter].ncclNetPluginRefCount = ncclParamNetPluginRefCount();
     strcpy(netPluginLibs[pluginCounter++].name, defaultNetPlugin);
@@ -339,7 +346,9 @@ ncclResult_t ncclNetInit(struct ncclComm* comm) {
     if (netPluginLibs[pluginIndex].ncclNetPluginState >= ncclNetPluginStateInitReady) {
       NCCLCHECK(ncclNetPluginInit(comm, &netPluginLibs[pluginIndex]));
     }
-    
+
+    //插件已经enable
+    //如果外部插件都加载失败，则使用内部的2个插件
     //分配vft表给comm的ncclNet
     if (netPluginLibs[pluginIndex].ncclNetPluginState == ncclNetPluginStateEnabled) {
       bool isAssigned = false;
@@ -356,7 +365,8 @@ ncclResult_t ncclNetInit(struct ncclComm* comm) {
       }
     }
   }
-  
+
+  //插件加载成功
   if (ncclNetPluginInitialized) 
     return ncclSuccess;
   
