@@ -462,10 +462,11 @@ static void* bootstrapRoot(void* rargs) {
   // 接收所有 rank 的地址信息
   do {
     struct ncclSocket sock;
-    // 创建套接字，接收信息
+    // 创建套接字，接收组内rank同步的地址信息
     NCCLCHECKGOTO(ncclSocketInit(&sock), res, out);
     NCCLCHECKGOTO(ncclSocketAccept(&sock, listenSock), res, out);
     NCCLCHECKGOTO(socketRecv(&sock, &info, sizeof(info)), res, out);
+    //关闭连接
     NCCLCHECKGOTO(ncclSocketClose(&sock), res, out);
 
     // 首次接收，保存初始信息
@@ -482,12 +483,16 @@ static void* bootstrapRoot(void* rargs) {
       // if the number of root > 1, we will receive one extra info from the first local_id of the next root
       // 当 nroots==1 时，始终返回 nranks 的值
       // 计算需要发送/接收的节点数（nroots=1 时无需额外处理）
+      //该root下有多少个rank
       n2send = nRankFromRoot(iroot, nranks, nroots);
       // 如果 root 大于 1，nrecv+1，因为需要存储相邻的 rank 地址
       nrecv = n2send + ((nroots > 1) ? 1 : 0);
       // 分配 nrecv 个 ringConnectInfo 和 ncclSocketAddress 用于保存接收到的地址
       // 初始值为 0
+      //rankInfo存储ring地址
       NCCLCHECKGOTO(ncclCalloc(&rankInfo, nrecv), res, out);
+      //rankAddressesRoot存储socket root地址
+      //如果是多root，nrecv需要多分配一个
       NCCLCHECKGOTO(ncclCalloc(&rankAddressesRoot, nrecv), res, out);
     }
 
@@ -497,7 +502,7 @@ static void* bootstrapRoot(void* rargs) {
       goto out;
     }
 
-    // 获取本地的 id 号
+    // 计算本地 localId 号，用于决定地址存放的位置
     // 如果只有一个 nroots
     // localId 就等于当前收到的 info.rank
     localId = localIdFromRoot(info.rank, iroot, nranks, nroots);
@@ -666,7 +671,6 @@ ncclResult_t bootstrapGetUniqueId(struct ncclBootstrapHandle* handle) {
 
     // 在 bootstrapNetIfAddr 上创建一个监听 socket，等待其他节点来连接
     // root 收集所有的交换信息，将收集到的信息下发给所有节点
-    // 所有节点之间在建立 P2P 的 fullmesh 连接
     // bootstrapCreateRoot 返回后，包含了 port 信息
     NCCLCHECK(bootstrapCreateRoot(handle, false));
   }
@@ -864,6 +868,7 @@ static ncclResult_t ringAllInfo(struct ncclComm* comm, struct bootstrapState* st
                                 struct rasRankInit* rasRanks) {
   ncclResult_t res = ncclSuccess;
   int rank = comm->rank;
+  //所有rank
   int nRanks = comm->nRanks;
 
   // 需要同步的单个 rank 信息
@@ -967,7 +972,7 @@ ncclResult_t bootstrapInit(int nHandles, void* handles, struct ncclComm* comm) {
   BOOTSTRAP_PROF_OPEN(timers[BOOTSTRAP_INIT_TIME_TOTAL]);
 
   // fill up the info
-  // 总共多少个节点进程
+  // 总共多少个节点进程，包含所有的
   info.nranks = nranks;
   // 有多少个是 root 节点进程
   info.nroots = nHandles;
@@ -1064,6 +1069,7 @@ ncclResult_t bootstrapInit(int nHandles, void* handles, struct ncclComm* comm) {
     // 上一个 rank 号在那个 root 节点
     int prev_root = rootIdFromRank(prev_rank, nranks, nHandles);
 
+//这里是+1，
     info.rank = prev_rank + 1; // my rank as seen by the previous root
     info.iroot = prev_root;
     // 同步地址信息给相邻的 root
