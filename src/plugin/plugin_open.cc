@@ -268,7 +268,7 @@ void* ncclOpenTunerPluginLib(const char* name) {
 // 返回：动态库句柄，失败返回 nullptr
 //
 // 环境变量：NCCL_PROFILER_PLUGIN_FILE
-void* ncclProfilerPluginLib(const char* name) {
+void* ncclOpenProfilerPluginLib(const char* name) {
   return openPluginLib(ncclPluginTypeProfiler, name);
 }
 

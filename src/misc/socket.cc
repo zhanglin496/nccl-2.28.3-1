@@ -151,18 +151,23 @@ static ncclResult_t findInterfaces(const char* prefixList, char* names, union nc
 
   *found = 0;
   struct ifaddrs *interfaces, *interface;
+  //获取系统当前所有接口的纤细信息
   SYSCHECK(getifaddrs(&interfaces), "getifaddrs");
   for (interface = interfaces; interface && *found < maxIfs; interface = interface->ifa_next) {
-    if (interface->ifa_addr == NULL) continue;
+    //没有地址
+    if (interface->ifa_addr == NULL) 
+        continue;
 
     /* We only support IPv4 & IPv6 */
     int family = interface->ifa_addr->sa_family;
+    //检查地址族
     if (family != AF_INET && family != AF_INET6)
       continue;
 
     /* Only consider running interfaces, i.e. UP and physically attached. */
     //必须是running状态
-    if (!(interface->ifa_flags & IFF_RUNNING)) continue;
+    if (!(interface->ifa_flags & IFF_RUNNING)) 
+        continue;
 
     TRACE(NCCL_INIT|NCCL_NET,"Found interface %s:%s", interface->ifa_name, ncclSocketToString((union ncclSocketAddress *) interface->ifa_addr, line));
 
@@ -177,6 +182,7 @@ static ncclResult_t findInterfaces(const char* prefixList, char* names, union nc
     }
 
     // check against user specified interfaces
+    //名称不匹配
     if (!(matchIfList(interface->ifa_name, -1, userIfs, nUserIfs, searchExact) ^ searchNot)) {
       continue;
     }
@@ -267,6 +273,7 @@ ncclResult_t ncclFindInterfaceMatchSubnet(char* ifName, union ncclSocketAddress*
       continue;
 
     // check against user specified interfaces
+    //是否在同一个子网内,如果不是，继续遍历一下接口
     if (!matchSubnet(*interface, remoteAddr)) {
       continue;
     }
@@ -373,6 +380,7 @@ ncclResult_t ncclFindInterfaces(char* ifNames, union ncclSocketAddress *ifAddrs,
                                 int* nIfs) {
   static int shownIfName = 0;
   // Allow user to force the INET socket family selection
+  //默认为-1，系统自己选
   int sock_family = envSocketFamily();
   // User specified interface
   //环境变量使用指定的接口

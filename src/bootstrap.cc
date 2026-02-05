@@ -764,6 +764,7 @@ static ncclResult_t createListenSocket(struct ncclComm* comm, uint64_t magic, st
                                        ncclSocketType type) {
   NCCLCHECK(ncclSocketInit(socket, &bootstrapNetIfAddr, magic, type, comm->abortFlag));
   NCCLCHECK(ncclSocketListen(socket));
+  //把socket地址返回给addr
   NCCLCHECK(ncclSocketGetAddr(socket, addr));
   return ncclSuccess;
 }
@@ -784,6 +785,7 @@ static ncclResult_t netGetDevice(int rank, struct ncclComm* comm, int* dev) {
   if (devOOB < 0) {
     std::lock_guard<std::mutex> lock(bootstrapNetMutex);
     if (devOOB < 0) {
+          //设置了NCCL_OOB_NET_IFNAME环境变量，使用指定接口
       const char* userIfEnv = ncclGetEnv("NCCL_OOB_NET_IFNAME");
       if (userIfEnv && strlen(userIfEnv) > 0) {
         INFO(NCCL_BOOTSTRAP | NCCL_ENV, "NCCL_OOB_NET_IFNAME set to %s", userIfEnv);
