@@ -5,7 +5,7 @@
  ************************************************************************/
 
 //================================================================================
-// 文件名称: net_ib_annotated.cc
+// 文件名称: net_ib.cc
 // 功能描述: NCCL InfiniBand/RoCE 网络传输层实现（带详细中文注释）
 //
 // 本文件实现了 NCCL 的 IB (InfiniBand) 网络传输后端，支持：
@@ -243,13 +243,15 @@ pthread_t ncclIbAsyncThread;
 // 异步事件处理线程主函数
 // 功能：监听 IB 设备的异步事件（如链路故障、QP 错误等）
 static void* ncclIbAsyncThreadMain(void* args) {
+
+  //是那个设备
   struct ncclIbDev* dev = (struct ncclIbDev*)args;
   
   while (1) {
     struct ibv_async_event event;
     
     // 阻塞调用，等待异步事件
-    // 通过 ibv_get_async_event 从设备获取异步事件
+    // 通过 ibv_get_async_event 从指定设备获取异步事件
     if (ncclSuccess != wrap_ibv_get_async_event(dev->context, &event)) { 
         break;  // 出错或设备关闭，退出线程
     }
@@ -327,6 +329,7 @@ static void* ncclIbAsyncThreadMain(void* args) {
         break;
     }
   }
+  
   return NULL;
 }
 
@@ -345,6 +348,7 @@ static sa_family_t envIbAddrFamily(void) {
 
   INFO(NCCL_ENV, "NCCL_IB_ADDR_FAMILY set by environment to %s", env);
 
+//使用ipv4还是ipv6
   if (strcmp(env, "AF_INET") == 0) {
     family = AF_INET;
   } else if (strcmp(env, "AF_INET6") == 0) {
@@ -369,6 +373,7 @@ static void* envIbAddrRange(sa_family_t af, int* mask) {
 
   INFO(NCCL_ENV, "NCCL_IB_ADDR_RANGE set by environment to %s", env);
 
+//fe80::ccde:f7ff:fe26:bf0b/64 子网掩码格式
   // 解析 "addr/prefix" 格式
   char addrString[128] = { 0 };
   snprintf(addrString, 128, "%s", env);
@@ -377,6 +382,7 @@ static void* envIbAddrRange(sa_family_t af, int* mask) {
   if (NULL == maskStrPtr) {
     return NULL;
   }
+  
   *(maskStrPtr++) = '\0';  // 分割地址和掩码
 
   // 将字符串转换为网络地址
@@ -388,7 +394,7 @@ static void* envIbAddrRange(sa_family_t af, int* mask) {
   // 解析掩码长度
   *mask = (int)strtol(maskStrPtr, NULL, 10);
   
-  // 验证掩码长度
+  // 验证掩码长度是否合法
   if (af == AF_INET && *mask > 32) {
     INFO(NCCL_INIT|NCCL_NET, "NET/IB: Ip address mask '%d' is invalid for family %s, ignoring mask", *mask, (af == AF_INET) ? "AF_INET" : "AF_INET6");
     *mask = 0;
@@ -496,6 +502,7 @@ static ncclResult_t ncclIbRoceGetVersionNum(const char* deviceName, int portNum,
   char roceTypePath[PATH_MAX] = { 0 };
   
   // 构建 sysfs 路径
+  //cat  /sys/class/infiniband/mlx5_0/ports/1/gid_attrs/types/0
   snprintf(roceTypePath, sizeof(roceTypePath), "/sys/class/infiniband/%s/ports/%d/gid_attrs/types/%d", deviceName, portNum, gidIndex);
 
   int fd = open(roceTypePath, O_RDONLY);
@@ -696,7 +703,9 @@ static int ibvSpeeds[] = {
 // 查找第一个设置的位
 static int firstBitSet(int val, int max) {
   int i = 0;
-  while (i<max && ((val & (1<<i)) == 0)) i++;
+  while (i<max && ((val & (1<<i)) == 0))
+    i++;
+  
   return i;
 }
 
@@ -780,7 +789,8 @@ ncclResult_t ncclIbMakeVDeviceInternal(int* d, ncclNetVDeviceProps_t* props) {
   for (int i = 0; i < props->ndevs; i++) {
     ncclIbDev* dev = ncclIbDevs + props->devs[i];
     
-    if (mDev->vProps.ndevs == NCCL_IB_MAX_DEVS_PER_NIC) return ncclInvalidUsage;
+    if (mDev->vProps.ndevs == NCCL_IB_MAX_DEVS_PER_NIC)
+        return ncclInvalidUsage;
     
     mDev->vProps.devs[mDev->vProps.ndevs++] = props->devs[i];
     mDev->speed += dev->speed;  // 累加速率

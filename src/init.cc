@@ -585,7 +585,9 @@ static ncclResult_t commAlloc(struct ncclComm* comm, struct ncclComm* parent, in
     // 创建新的共享资源
     struct ncclSharedResources* sharedRes = NULL;
     NCCLCHECK(ncclCalloc(&sharedRes, 1));
+  
     /* 大部分属性稍后在 initTransportsRank() 中设置 */
+    //记录是那个通信器创建了这个sharedRes
     sharedRes->owner = comm;           // 记录谁拥有这个 comm
     sharedRes->tpNRanks = comm->nRanks;  // 记录总的 ranks 数
     NCCLCHECK(ncclCalloc(&sharedRes->tpRankToLocalRank, comm->nRanks));
@@ -1953,7 +1955,8 @@ static ncclResult_t ncclCommInitRankFunc(struct ncclAsyncJob* job_) {
       // Split 操作
       NCCLCHECKGOTO(commGetSplitInfo(comm, job->parent, job->color, job->key, &job->nranks, &job->myrank, parentRanks), res, fail);
       // 负 color 不创建新 comm 对象。我们需要参与 allgather，但现在完成了。
-      if (job->color == NCCL_SPLIT_NOCOLOR) goto exit;
+      if (job->color == NCCL_SPLIT_NOCOLOR) 
+        goto exit;
     }
     // 子 hash 从（父 hash，split count，color）获得
     uint64_t hacc[2] = {1, 1};
@@ -2037,12 +2040,14 @@ static ncclResult_t ncclCommInitRankFunc(struct ncclAsyncJob* job_) {
        timers[TIMER_INIT_GRAPHS] / 1e9, timers[TIMER_INIT_CONNECT] / 1e9, timers[TIMER_INIT_TOTAL] / 1e9 - sum_timers);
 
 exit:
+  //返回新的通信器给调用方
   if (job->newcomm) {
     /* 分配给用户指针 */
     __atomic_store_n(job->newcomm, comm, __ATOMIC_RELEASE);
   }
   free(parentRanks);
   return res;
+  
 fail:
   comm->initState = res;
   goto exit;
@@ -3018,8 +3023,10 @@ static ncclResult_t ncclCommInitChildComm(ncclComm_t comm, ncclComm_t* newcomm, 
   }
 
   NCCLCHECKGOTO(ncclCalloc(&job, 1), res, fail);
+  //指向childComm
   job->comm = childComm;
   job->newcomm = newcomm;
+  //指向原始的主comm
   job->parent = comm;
   job->color = color;
   job->key = key;
@@ -3042,16 +3049,23 @@ static ncclResult_t ncclCommInitChildComm(ncclComm_t comm, ncclComm_t* newcomm, 
 exit:
   (void)cudaSetDevice(oldDev);
   return res;
+
 fail:
   if (childComm) {
     if (!comm->shareResources) {
-      if (childComm->abortFlag) free(childComm->abortFlag);
-      if (childComm->abortFlagDev) ncclCudaHostFree(childComm->abortFlagDev);
-      if (childComm->abortFlagRefCount) free(childComm->abortFlagRefCount);
+      if (childComm->abortFlag) 
+        free(childComm->abortFlag);
+      if (childComm->abortFlagDev) 
+        ncclCudaHostFree(childComm->abortFlagDev);
+      if (childComm->abortFlagRefCount) 
+        free(childComm->abortFlagRefCount);
     }
     free(childComm);
   }
-  if (newcomm) *newcomm = NULL;
+  
+  if (newcomm)
+    *newcomm = NULL;
+  
   goto exit;
 }
 
@@ -3086,7 +3100,11 @@ exit:
 // ncclCommSplit - 分割通信器
 // 根据颜色和键值将通信器分割成多个子通信器
 // color: 相同 color 的 ranks 分到同一组
-// key: 在同一 color 内，按 key 排序确定新 rank
+// key: 在同一 color 内，按 key 排序确定新 rank号，内部新 rank号还是从0开始编号
+//split后原始通信器 comm 完全不变
+//    - comm->rank 保持原值
+//    - comm->nRanks 保持原值
+//newcomm包哈新的rank成员，rank号还是从0开始重新编号
 // ============================================================================
 NCCL_API(ncclResult_t, ncclCommSplit, ncclComm_t comm, int color, int key, ncclComm_t *newcomm, ncclConfig_t *config);
 ncclResult_t ncclCommSplit(ncclComm_t comm, int color, int key, ncclComm_t *newcomm, ncclConfig_t *config) {

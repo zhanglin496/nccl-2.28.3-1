@@ -36,6 +36,7 @@ struct ncclTransport* ncclTransports[NTRANSPORTS+1] = {
   &collNetTransport,    // 4. CollNet 传输 - 集合网络加速器
   &profilerTransport    // 5. Profiler 传输 - 性能分析（不用于实际数据传输）
 };
+  
 // 注意：NTRANSPORTS 是编译时常量，值为 4（不包括 profilerTransport）
 // 数组大小为 NTRANSPORTS+1 是为了包含 profilerTransport
 
@@ -110,6 +111,7 @@ static ncclResult_t selectTransport(struct ncclComm* comm, struct ncclTopoGraph*
   WARN("No transport found for rank %d[%lx] -> rank %d[%lx]", myInfo->rank, myInfo->busId, peerInfo->rank, peerInfo->busId);
   return ncclSystemError;
 }
+
 
 // ============================================================================
 // ncclTransportP2pConnect - 标记需要建立的 P2P 连接
@@ -288,6 +290,14 @@ ncclResult_t ncclTransportP2pSetup(struct ncclComm* comm, struct ncclTopoGraph* 
   // Stream used during transport setup; need for P2P pre-connect + CUDA Graph
   // 传输层设置期间使用的流；用于 P2P 预连接和 CUDA Graph 支持
   ncclResult_t ret = ncclSuccess;
+  //这个函数名称叫p2p, 但这个函数并不是专门为 P2P 传输服务的，而是一个通用的连接建立框架。
+  //
+  //  为什么叫 "P2pSetup"？
+  //  在 NCCL 的设计理念中：
+  //  1. 所有节点间通信都被视为 P2P 模式
+  //  2. Ring 拓扑中每个节点只与 prev 和 next 通信
+  //  3. SHM 也是 P2P 的一种形式（同节点内 GPU 间通信）
+  
 
   // data: 存储中间的 send/recvData 结构，用于连接信息交换
   // 这是一个二维数组：data[peer_index][channel_index]
@@ -395,6 +405,7 @@ ncclResult_t ncclTransportP2pSetup(struct ncclComm* comm, struct ncclTopoGraph* 
     // ========================================================================
     // 通过 Bootstrap 交换连接信息
     // ========================================================================
+    //只有2个rank的情况下
     if (sendPeer == recvPeer) {
       // 发送和接收是同一个 peer 的情况
       if (recvChannels+sendChannels) {

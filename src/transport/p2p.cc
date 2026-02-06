@@ -15,10 +15,10 @@
 #include "register_inline.h"
 
 enum p2pType { 
-    P2P_DIRECT, //同节点，同进程GPU，直接指针访问。
+    P2P_DIRECT, //同节点，同进程/多线程GPU，直接指针访问。
     P2P_INTERMEDIATE,// 间接传输（通过中间GPU）
-    P2P_IPC, // Legacy CUDA IPC
-    P2P_CUMEM    // cuMem API (CUDA 11.3+)
+    P2P_IPC, // 同节点，同进程/不同进程，Legacy CUDA IPC
+    P2P_CUMEM    // 同节点，同进程/不同进程，cuMem API (CUDA 11.3+)
 };
 
 struct ncclP2pBuff {
@@ -395,13 +395,15 @@ ncclResult_t p2pSendSetup(struct ncclComm* comm, struct ncclTopoGraph* graph, st
 
   int sendSize = sizeof(struct ncclSendMem);
   // For P2P Read the SIMPLE buffer is tagged on the end of the ncclSendMem structure
-  if (info->read) sendSize += comm->buffSizes[NCCL_PROTO_SIMPLE];
+  if (info->read) 
+    sendSize += comm->buffSizes[NCCL_PROTO_SIMPLE];
+  
   ALIGN_SIZE(sendSize, CUDA_IPC_MIN);
 
   if (intermediateRank == -1) {
     //设置P2P类型
     info->rank = myInfo->rank;
-    //同进程内不同 GPU，才能使用P2P_DIRECT模式
+    //同进程内/多线程的不同 GPU，才能使用P2P_DIRECT模式
     if (P2P_SAME_PID(myInfo, peerInfo) && ncclParamP2pDirectDisable() == 0 && useMemcpy == 0) {
       resources->type = P2P_DIRECT;
       INFO(NCCL_INIT|NCCL_P2P, "Channel %02d/%01d : %d[%d] -> %d[%d] via P2P/direct pointer%s",

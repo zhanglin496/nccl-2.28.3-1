@@ -1031,6 +1031,7 @@ ncclResult_t ncclTopoTrimXmlRec(struct ncclXmlNode* node, int* keep) {
   const char* str;
   NCCLCHECK(xmlGetAttr(node, "keep", &str));
   if (str && strcmp(str, "1") == 0) {
+    //移除keep标记
     NCCLCHECK(xmlUnsetAttr(node, "keep"));
     *keep = 1;
   } else {
@@ -1054,6 +1055,7 @@ ncclResult_t ncclTopoTrimXmlRec(struct ncclXmlNode* node, int* keep) {
       NCCLCHECK(xmlGetAttr(node, "busid", &busid));
       TRACE(NCCL_GRAPH, "Removing node %s %s %s\n", node->name, name, busid);
 #endif
+        //移除node
       NCCLCHECK(xmlRemoveNode(node));
     }
   }

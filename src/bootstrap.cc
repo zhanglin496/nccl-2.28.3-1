@@ -244,6 +244,7 @@ static ncclResult_t checkAbort(volatile uint32_t* flag, int* cntr) {
       return ncclInternalError;
     }
   }
+  
   *cntr = (*cntr + 1) % BOOTSTRAP_N_CHECK_ABORT;
   return ncclSuccess;
 }
@@ -286,12 +287,15 @@ static ncclResult_t netIsend(ncclNet_t* net, void* sendComm, void* data, int siz
 // 非阻塞接收函数
 static ncclResult_t netIrecv(ncclNet_t* net, void* recvComm, void* data, int size, void* dataHandle, int tag, void** recvReq,
                              int* done) {
-  if (*done) return ncclSuccess;  // 如果已经完成，直接返回
+  if (*done)
+    return ncclSuccess;  // 如果已经完成，直接返回
+
   if (!*recvReq) {
     // 首次调用，发起接收请求
     size_t size64 = size;
     NCCLCHECK(net->irecv(recvComm, 1, &data, &size64, &tag, &dataHandle, NULL, recvReq));
   }
+
   if (*recvReq) {
     // 测试接收是否完成
     NCCLCHECK(net->test(*recvReq, done, NULL));
@@ -299,6 +303,7 @@ static ncclResult_t netIrecv(ncclNet_t* net, void* recvComm, void* data, int siz
       *recvReq = NULL;
     }
   }
+  
   return ncclSuccess;
 }
 
@@ -750,7 +755,9 @@ struct bootstrapState {
   volatile uint32_t* abortFlag;
 };
 
+//访问ring信息
 #define STATE_RING(s, f) (s->ring.f)
+//listen信息
 #define STATE_LISTEN(s, f) (s->listen.f)
 
 // ============================================================================
@@ -763,6 +770,7 @@ struct bootstrapState {
 static ncclResult_t createListenSocket(struct ncclComm* comm, uint64_t magic, struct ncclSocket* socket, union ncclSocketAddress* addr,
                                        ncclSocketType type) {
   NCCLCHECK(ncclSocketInit(socket, &bootstrapNetIfAddr, magic, type, comm->abortFlag));
+  //设置为监听状态
   NCCLCHECK(ncclSocketListen(socket));
   //把socket地址返回给addr
   NCCLCHECK(ncclSocketGetAddr(socket, addr));
@@ -1286,10 +1294,15 @@ static ncclResult_t socketConnect(void* commState, int peer, int tag, struct ncc
   ncclResult_t ret = ncclSuccess;
   struct bootstrapState* state = (struct bootstrapState*)commState;
 
-  struct socketAckInfo ack = (struct socketAckInfo){.rank = state->rank, .tag = tag};
+  struct socketAckInfo ack = (struct socketAckInfo) {
+    .rank = state->rank, 
+    .tag = tag
+  };
+    
   NCCLCHECKGOTO(ncclSocketInit(sock, state->peerP2pAddresses + peer, state->magic, ncclSocketTypeBootstrap, state->abortFlag), ret, fail);
   NCCLCHECKGOTO(ncclSocketConnect(sock), ret, fail);
   NCCLCHECKGOTO(socketSend(sock, &ack, sizeof(struct socketAckInfo)), ret, fail);
+  
   return ncclSuccess;
 
 fail:
@@ -1298,7 +1311,7 @@ fail:
 }
 
 // ============================================================================
-// bootstrapSend - 发送数据到指定 peer
+// bootstrapSend - 发送数据到指定 peer peerP2pAddresses
 // ============================================================================
 ncclResult_t bootstrapSend(void* commState, int peer, int tag, void* data, int size) {
   ncclResult_t ret = ncclSuccess;
@@ -1344,6 +1357,7 @@ static ncclResult_t unexpectedEnqueue(struct bootstrapState* state, int peer, in
 static ncclResult_t unexpectedDequeue(struct bootstrapState* state, int peer, int tag, struct ncclSocket* sock, int* found) {
   struct unexConn* elem = state->unexpectedConnections;
   struct unexConn* prev = NULL;
+  
   *found = 0;
   while (elem) {
     if (elem->peer == peer && elem->tag == tag) {
@@ -1386,7 +1400,8 @@ static ncclResult_t socketAccept(void* commState, int peer, int tag, struct nccl
   // 首先在非预期连接队列中查找
   int found;
   NCCLCHECK(unexpectedDequeue(state, peer, tag, sock, &found));
-  if (found) return ncclSuccess;
+  if (found) 
+    return ncclSuccess;
 
   // Then look for new connections
   // 如果没找到，则接受新连接
@@ -1395,10 +1410,14 @@ static ncclResult_t socketAccept(void* commState, int peer, int tag, struct nccl
     NCCLCHECKGOTO(ncclSocketInit(sock), ret, fail);
     NCCLCHECKGOTO(ncclSocketAccept(sock, &STATE_LISTEN(state, peerSocket)), ret, fail);
     NCCLCHECKGOTO(socketRecv(sock, &ack, sizeof(struct socketAckInfo)), ret, fail);
-    if (ack.rank == peer && ack.tag == tag) return ncclSuccess;
-    // 不是我们期待的连接，加入队列
+    //是我们期望的，返回
+    if (ack.rank == peer && ack.tag == tag)
+        return ncclSuccess;
+
+    // 不是我们期待的连接，加入队列，循环接收
     NCCLCHECKGOTO(unexpectedEnqueue(state, ack.rank, ack.tag, sock), ret, fail);
   }
+  
   return ncclSuccess;
 fail:
   (void)ncclSocketClose(sock);
@@ -1414,9 +1433,12 @@ ncclResult_t bootstrapRecv(void* commState, int peer, int tag, void* data, int s
   struct ncclSocket sock;
   NCCLCHECK(socketAccept(commState, peer, tag, &sock));
   TRACE(NCCL_BOOTSTRAP, "Receiving tag=%d peer=%d size=%d", tag, peer, size);
+  //接收数据
   NCCLCHECKGOTO(socketRecv(&sock, ((char*)data), size), ret, fail);
+  //关闭连接
   NCCLCHECKGOTO(ncclSocketClose(&sock, /*wait=*/true), ret, fail);
   return ret;
+  
 fail:
   (void)ncclSocketClose(&sock);
   return ret;
@@ -1586,8 +1608,10 @@ ncclResult_t bootstrapBarrier(void* commState, int rank, int nranks, int tag) {
 // ============================================================================
 // bootstrapIntraNodeAllGather - 节点内 AllGather
 // ============================================================================
+//这里不是用的bootstrap阶段建立的环形连接，而是用了peeraddress临时建连，同步数据后关闭连接
 ncclResult_t bootstrapIntraNodeAllGather(void* commState, int* ranks, int rank, int nranks, void* allData, int size) {
-  if (nranks == 1) return ncclSuccess;
+  if (nranks == 1) 
+    return ncclSuccess;
   TRACE(NCCL_INIT, "rank %d nranks %d size %d - ENTER", rank, nranks, size);
 
   int prevRank = ranks[(rank - 1 + nranks) % nranks];
@@ -1612,11 +1636,14 @@ ncclResult_t bootstrapIntraNodeAllGather(void* commState, int* ranks, int rank, 
 // bootstrapP2PBroadcast - P2P 广播
 // ============================================================================
 static ncclResult_t bootstrapP2PBroadcast(void* commState, int* ranks, int rank, int nranks, int root, void* bcastData, int size) {
-  if (nranks == 1) return ncclSuccess;
+  if (nranks == 1)
+    return ncclSuccess;
+  
   if (rank == root) {
     // 根节点向所有其他 rank 发送数据
     for (int i = 0; i < nranks; i++) {
-      if (i != root) NCCLCHECK(bootstrapSend(commState, ranks ? ranks[i] : i, /*tag=*/ranks ? ranks[i] : i, bcastData, size));
+      if (i != root) 
+        NCCLCHECK(bootstrapSend(commState, ranks ? ranks[i] : i, /*tag=*/ranks ? ranks[i] : i, bcastData, size));
     }
   } else {
     // 非根节点从根节点接收数据

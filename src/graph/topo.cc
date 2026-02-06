@@ -491,10 +491,14 @@ ncclResult_t ncclGetSystemId(struct ncclTopoSystem* system, struct ncclXmlNode* 
   NCCLCHECK(xmlGetAttr(xmlCpu, "host_hash", &hostHashStr));
   uint64_t hostHash = hostHashStr ? strtoull(hostHashStr, NULL, 16) : 0;
   int systemId;
+
   for (systemId=0; systemId<system->nHosts; systemId++) 
-    if (system->hostHashes[systemId] == hostHash) break;
+    if (system->hostHashes[systemId] == hostHash) 
+        break;
+
   if (systemId == system->nHosts)
     system->hostHashes[system->nHosts++] = hostHash;
+
   *systemIdPtr = systemId;
   return ncclSuccess;
 }
@@ -676,6 +680,7 @@ ncclResult_t ncclTopoAddC2c(struct ncclXmlNode* node, struct ncclTopoSystem* sys
 
 ncclResult_t ncclTopoGetSystemFromXml(struct ncclXml* xml, struct ncclTopoSystem** topoSystem, const uint64_t localHostHash) {
   NCCLCHECK(ncclCalloc(topoSystem, 1));
+  
   struct ncclTopoSystem* system = *topoSystem;
   struct ncclXmlNode* topNode;
   NCCLCHECK(xmlFindTag(xml, "system", &topNode));
@@ -686,6 +691,7 @@ ncclResult_t ncclTopoGetSystemFromXml(struct ncclXml* xml, struct ncclTopoSystem
   }
 
   int systemId = 0;
+  //hostHashes中找到等于localHostHash的索引
   while (systemId < system->nHosts && system->hostHashes[systemId] != localHostHash) 
     systemId++;
 
@@ -1462,7 +1468,7 @@ ncclResult_t ncclTopoGetSystem(struct ncclComm* comm, struct ncclTopoSystem** sy
   NCCLCHECKGOTO(ncclTopoFillGpu(xml, busId, &node), ret, fail);
   //<gpu dev="2" sm="90" rank="2" gdr="1">
   if (node) {
-    //往gpunode补充信息
+    //往gpunode补充信息，本gpu信息要暴力
     NCCLCHECKGOTO(xmlSetAttrInt(node, "keep", 1), ret, fail);
     //自己的rank号
     NCCLCHECKGOTO(xmlSetAttrInt(node, "rank", comm->rank), ret, fail);
@@ -1539,6 +1545,10 @@ ncclResult_t ncclTopoGetSystem(struct ncclComm* comm, struct ncclTopoSystem** sy
   // nLocalRanks can't actually be 0, or we wouldn't be running at all...
   // coverity[divide_by_zero]
   //聚合同一个节点内的ncclXml信息
+  //  在一个 8 GPU 的节点上，每个进程只负责一个 GPU。通过融合：
+  ///- Rank 0 看到完整的 GPU0 信息
+  //- Rank 1 看到完整的 GPU1 信息
+ // - 融合后，所有 rank 都能看到节点内全部 8 个 GPU 的拓扑信息
   NCCLCHECKGOTO(bootstrapIntraNodeAllGather(comm->bootstrap, localRanks, localRank, nLocalRanks, mem, xmlMemSize(NCCL_TOPO_XML_MAX_NODES)), ret, fail);
   if (comm->MNNVL) {
     // Ensure that we have enough room when fusing topos from multiple nodes.

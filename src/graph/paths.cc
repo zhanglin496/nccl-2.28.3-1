@@ -92,7 +92,8 @@ static ncclResult_t ncclTopoSetPaths(struct ncclTopoNode* baseNode, struct ncclT
   if (baseNode->paths[baseNode->type] == NULL) {
     NCCLCHECK(ncclCalloc(baseNode->paths+baseNode->type, system->nodes[baseNode->type].count));
     // 初始化所有路径为 PATH_DIS（断开/不可达）
-    for (int i=0; i<system->nodes[baseNode->type].count; i++) baseNode->paths[baseNode->type][i].type = PATH_DIS;
+    for (int i=0; i<system->nodes[baseNode->type].count; i++) 
+        baseNode->paths[baseNode->type][i].type = PATH_DIS;
   }
 
   // breadth-first search to set all paths to that node in the system
@@ -178,7 +179,8 @@ static ncclResult_t ncclTopoSetPaths(struct ncclTopoNode* baseNode, struct ncclT
 
           // Copy the rest of the path
           // 复制剩余路径（从 node 到 baseNode）
-          for (int i=0; i<path->count; i++) remPath->list[i+1] = path->list[i];
+          for (int i=0; i<path->count; i++) 
+            remPath->list[i+1] = path->list[i];
 
           // 更新路径信息
           remPath->count = path->count + 1;      // 跳数 +1
@@ -213,8 +215,11 @@ static ncclResult_t ncclTopoSetPaths(struct ncclTopoNode* baseNode, struct ncclT
           // Add to the list for the next iteration if not already in the list
           // 将 remNode 加入下一层列表（如果尚未加入）
           int i;
-          for (i=0; i<nextNodeList.count; i++) if (nextNodeList.list[i] == remNode) break;
-          if (i == nextNodeList.count) nextNodeList.list[nextNodeList.count++] = remNode;
+          for (i=0; i<nextNodeList.count; i++) 
+            if (nextNodeList.list[i] == remNode) break;
+            
+          if (i == nextNodeList.count) 
+            nextNodeList.list[nextNodeList.count++] = remNode;
         }
       }
     }
@@ -1439,6 +1444,7 @@ ncclResult_t ncclTopoComputeP2pChannels(struct ncclComm* comm) {
     comm->p2pnChannels = std::min(comm->nChannels, (int)ncclParamMaxP2pNChannels());
     comm->p2pnChannels = std::min(std::max(comm->p2pnChannels, (int)ncclParamMinP2pNChannels()), comm->sharedRes->tpP2pNChannels);
   } else {
+    //comm自身创建的sharedRes
     comm->p2pnChannels = std::min(comm->nChannels, (int)ncclParamMaxP2pNChannels());
     comm->p2pnChannels = std::max(comm->p2pnChannels, (int)ncclParamMinP2pNChannels());
   }

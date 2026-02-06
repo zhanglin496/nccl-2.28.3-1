@@ -18,6 +18,7 @@ ncclResult_t ncclTransportRingConnect(struct ncclComm* comm) {
   if (comm && comm->nRanks > 1) {
     comm->useGdr = true;
     comm->useNetPXN = false;
+  
   //遍历所有的通道，
     for (int c = 0; c < comm->nChannels; c++) {
       struct ncclChannel* channel = comm->channels + c;
@@ -30,7 +31,8 @@ ncclResult_t ncclTransportRingConnect(struct ncclComm* comm) {
       //设置本rank的ring信息
       ringInfo[comm->rank].useGdr = comm->useGdr;
       ringInfo[comm->rank].useNetPXN = comm->useNetPXN;
-      //同步通信组内的ring信息
+
+      //同步通信组内的ringConnInfo信息
       NCCLCHECKGOTO(bootstrapAllGather(comm->bootstrap, ringInfo, sizeof(struct ringConnInfo)), ret, fail);
 
       for (int i = 0; i < comm->nRanks; ++i) {
