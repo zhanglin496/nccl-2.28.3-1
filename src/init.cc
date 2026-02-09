@@ -1115,9 +1115,28 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
     NCCLCHECKGOTO(ncclMnnvlCheck(comm), ret, fail);
   }
 
+
+#if 0
+  这段代码主要处理以下场景：
+   ┌─────────────┬────────────────────────────────────────────────────────────────┐
+   │    场景     │                              描述                              │
+   ├─────────────┼────────────────────────────────────────────────────────────────┤
+   │ 单进程多GPU │ 一个进程控制多个GPU（如 mpirun -np 1 启动，进程内创建4个comm） │
+   ├─────────────┼────────────────────────────────────────────────────────────────┤
+   │ 多线程      │ 同一进程的多个线程各自创建NCCL comm                            │
+   ├─────────────┼────────────────────────────────────────────────────────────────┤
+   │ 进程内同步  │ 通过intraComm0和屏障变量实现进程内同步                         │
+   └─────────────┴────────────────────────────────────────────────────────────────┘
+#endif
+
+
   do {
-    // 计算进程内 ranks
-    int intraProcRank0 = -1, intraProcRank = -1, intraProcRanks = 0;
+    // 同一进程中第一个rank的索引
+    int intraProcRank0 = -1;
+    //当前rank在进程内的序号
+    int intraProcRank = -1;
+    //同一进程内的rank数量
+    int intraProcRanks = 0;
 
     // 统计组内 GPU 最小和最大计算能力
     for (int i = 0; i < nranks; i++)
@@ -1181,6 +1200,7 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
     assert(intraProcRank == 0 ? comm == comm0 : true);
 
     // 这里 intraComm0 可能会指向自己（比如每个 GPU 一个进程的工作模式）
+    //指向进程内第一个comm
     comm->intraComm0 = comm0;
     comm->intraRank = intraProcRank;
     comm->intraRanks = intraProcRanks;
@@ -1362,11 +1382,13 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
     // rank 映射到 node
     comm->rankToNode[r] = node;
 
-    // 检测混合 CPU 架构
+    // 检测混合 CPU 架构，每个rank的cpu架构是否一致
+    //cpu架构不一致
     if (comm->cpuArch != allGather3Data[r].cpuArch &&
         comm->cpuArch != NCCL_TOPO_CPU_ARCH_MIXED) {
       comm->cpuArch = NCCL_TOPO_CPU_ARCH_MIXED;
     }
+    //cpu厂商不一致
     if (comm->cpuVendor != allGather3Data[r].cpuVendor &&
         comm->cpuVendor != NCCL_TOPO_CPU_VENDOR_MIXED) {
       comm->cpuVendor = NCCL_TOPO_CPU_VENDOR_MIXED;
@@ -1389,8 +1411,11 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
 
   // 全局 rank 映射到 local rank
   for (int r = 0; r < comm->nRanks; r++) {
+    //rank位于那个node
     int node = comm->rankToNode[r];
+    //rank映射到localrank，从0开始编号
     comm->rankToLocalRank[r] = comm->nodeRanks[node].localRanks;
+    //加1
     comm->nodeRanks[node].localRanks++;
   }
 
@@ -1398,6 +1423,7 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
   comm->minLocalRanks = INT_MAX;
 
   // 计算通信组内一个节点中最大的 rank 数
+  //每个机器上rank数量可能不相同
   for (int n = 0; n < comm->nNodes; n++) {
     NCCLCHECKGOTO(ncclCalloc(&comm->nodeRanks[n].localRankToRank, comm->nodeRanks[n].localRanks), ret, fail);
     comm->maxLocalRanks = std::max(comm->maxLocalRanks, comm->nodeRanks[n].localRanks);
@@ -1519,7 +1545,7 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
   /* 到现在为止，comm 的所有信息都应该已知了。我们可以初始化共享资源并映射 localRanks 到 top parent local ranks。
    * 注意：这个 shareRes 初始化必须放在所有 proxy 操作之前。 */
 
-  // 如果 comm 自己创建了 sharedRes
+  // 如果是 comm 自己创建了 sharedRes
   if (comm->sharedRes->owner == comm) {
     comm->sharedRes->tpNLocalRanks = comm->localRanks;
     comm->sharedRes->magic = comm->magic;
@@ -1581,6 +1607,8 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
     int nNodesPow2 = pow2Up(nNodes);
     int nLocalsPow2 = pow2Up(nLocals);
     comm->p2pSchedule = ncclMemoryStackAlloc<ncclComm::P2pSchedulePair>(&comm->memPermanent, nRanks);
+    //分配nRanks个peer内存
+    //ncclMemoryStackAlloc本质上也是调用malloc从堆上分配的内存
     comm->planner.peers = ncclMemoryStackAlloc<ncclKernelPlanner::Peer>(&comm->memPermanent, nRanks);
     uint32_t nodeRound = 0;
     uint32_t nodeDelta = 0;

@@ -289,7 +289,7 @@ static void initOnceFunc() {
   #endif
 
   // Determine whether we support the cuMem APIs or not
-  //是否支持cumem api
+  //检查是否支持cumem api
   ncclCuMemSupported = ncclIsCuMemSupported();
 
   /* To use cuMem* for host memory allocation, we need to create context on each visible device.

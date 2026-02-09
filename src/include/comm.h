@@ -215,7 +215,7 @@ struct ncclSharedResources {
 
   // 对等端通信通道数组（每个通道一个数组，包含所有 rank 的对等端信息）
   struct ncclChannelPeer* peers[MAXCHANNELS];
-  // 设备端对等端通道数组
+  // 设备端对等端通道数组，内存来自GPU
   struct ncclDevChannelPeer* devPeers[MAXCHANNELS];
   /* P2P operation counter, one per channel */
   // 每个 channel 的 P2P 操作计数器
@@ -284,7 +284,7 @@ struct ncclChannel {
   // NVLS (NVLink SHARP) 算法拓扑结构
   struct ncclNvls nvls;
 
-  // 从 0 开始按序分配
+  // 从 0 开始按序分配，作为ncclComm channels中的索引
   int id; // index of this channel
   // 工作队列已生产的字节数（work fifo 的后继者）
   uint32_t workFifoProduced; // +1 successor of last used work fifo byte
@@ -788,6 +788,8 @@ struct ncclComm {
   struct ncclCudaContext* context;
 
   // 共享资源，commAlloc 中分配
+  //sharedRes 主要为 ncclCommSplit（通信器分割）和 ncclCommShrink（通信器收缩）操作服务，
+  //解决父子通信器之间资源复用的问题
   struct ncclSharedResources* sharedRes;
 
   /* map to top parent ranks. */

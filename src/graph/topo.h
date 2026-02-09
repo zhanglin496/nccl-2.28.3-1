@@ -253,9 +253,9 @@ struct ncclTopoNode {
 
 // 拓扑节点集合结构 (管理同一类型的所有节点)
 struct ncclTopoNodeSet {
-    //当前nodes节点数量
+    //当前类型nodes节点有效数量
   int count;                 // 该类型节点的实际数量
-    //每个节点下有多少个node
+    //每个节点下有多少个同类型的node
   struct ncclTopoNode nodes[NCCL_TOPO_MAX_NODES];  // 节点数组 (预分配最大空间)
 };
 

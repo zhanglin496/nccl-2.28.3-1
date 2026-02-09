@@ -1348,7 +1348,11 @@ static ncclResult_t unexpectedEnqueue(struct bootstrapState* state, int peer, in
     state->unexpectedConnections = unex;
     return ncclSuccess;
   }
-  while (list->next) list = list->next;
+
+  //加入末尾
+  while (list->next) 
+    list = list->next;
+
   list->next = unex;
   return ncclSuccess;
 }
@@ -1410,7 +1414,7 @@ static ncclResult_t socketAccept(void* commState, int peer, int tag, struct nccl
     NCCLCHECKGOTO(ncclSocketInit(sock), ret, fail);
     NCCLCHECKGOTO(ncclSocketAccept(sock, &STATE_LISTEN(state, peerSocket)), ret, fail);
     NCCLCHECKGOTO(socketRecv(sock, &ack, sizeof(struct socketAckInfo)), ret, fail);
-    //是我们期望的，返回
+    //比较peer和tag是否是我们期望的，返回
     if (ack.rank == peer && ack.tag == tag)
         return ncclSuccess;
 

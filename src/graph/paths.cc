@@ -421,7 +421,8 @@ static void ncclTopoRemovePaths(struct ncclTopoSystem* system) {
       struct ncclTopoNode* node = system->nodes[t1].nodes+n;
       // 遍历所有目标类型
       for (int t2=0; t2<NCCL_TOPO_NODE_TYPES; t2++) {
-        if (node->paths[t2]) free(node->paths[t2]);  // 释放路径数组
+        if (node->paths[t2]) 
+            free(node->paths[t2]);  // 释放路径数组
         node->paths[t2] = NULL;
       }
     }
@@ -1170,7 +1171,8 @@ ncclResult_t ncclTopoComputePaths(struct ncclTopoSystem* system, struct ncclComm
     // 移除无法或不想通过 P2P/SHM 通信的 GPU
     struct ncclPeerInfo* dstInfo = comm->peerInfo+system->nodes[GPU].nodes[g].gpu.rank;
     for (int p=0; p<system->nodes[GPU].count; p++) {
-      if (p == g) continue;  // 跳过自己
+      if (p == g) 
+        continue;  // 跳过自己
       struct ncclPeerInfo* srcInfo = comm->peerInfo+system->nodes[GPU].nodes[p].gpu.rank;
 
       int p2p;
@@ -1311,14 +1313,18 @@ ncclResult_t ncclTopoTrimSystem(struct ncclTopoSystem* system, struct ncclComm* 
 
   // 移除不在当前域的 GPU
   for (int i=0; i<ngpus; i++) {
-    if (domains[i] == myDomain) continue;  // 同一域，保留
+    if (domains[i] == myDomain)
+        continue;  // 同一域，保留
 
     // 查找并移除 GPU
     struct ncclTopoNode* gpu = NULL;
     int g;
     for (g=0; g<system->nodes[GPU].count /* This one varies over the loops */; g++) {
       gpu = system->nodes[GPU].nodes+g;
-      if (gpu->id == ids[i]) break; else gpu=NULL;
+      if (gpu->id == ids[i]) 
+        break; 
+      else 
+        gpu=NULL;
     }
     if (gpu == NULL) {
       WARN("Could not find id %lx", ids[i]);
