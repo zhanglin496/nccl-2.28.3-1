@@ -3476,6 +3476,7 @@ static ncclResult_t p2pTaskAppend(
             // 我们需要将 hasSeen 设置为 1，以避免重复的连接设置。
             comm->channels[channelId].peers[peer]->send[1].hasSeen = 1; // 标记已见过此发送连接
             comm->channels[channelId].peers[peer]->send[1].p2pOnly = 1; // 标记此连接仅用于 P2P（不用于集合通信）
+            //记录peer这个rank，使用那个通道channelId
             comm->connectSend[peer] |= (1UL<<channelId); // 在连接掩码中设置此通道位，表示需要建立发送连接
             ncclGroupCommPreconnect(comm);              // 触发组通信预连接（实际建立连接）
           }

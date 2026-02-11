@@ -198,6 +198,7 @@ inline ncclResult_t ncclGroupErrCheck(ncclResult_t ret) {
 
 // Add comm to this thread's group
 // 将通信器添加到当前线程的组中
+//将通信器（ncclComm）加入到当前线程的组操作链表中
 inline void ncclGroupCommJoin(struct ncclComm* comm, int type) {
   // 检查通信器是否尚未加入组（groupNext[type] 为特殊值 0x1 表示未加入）
   if (comm->groupNext[type] == reinterpret_cast<struct ncclComm*>(0x1)) {
@@ -208,6 +209,7 @@ inline void ncclGroupCommJoin(struct ncclComm* comm, int type) {
     // 同时确保兄弟通信器连续出现。这是 group.cc 中 doLaunches() 所要求的。
     struct ncclComm** pp = &ncclGroupCommHead[type];      // 获取链表头指针的地址
     // 查找相同派系的通信器（intraComm0 相同的属于同一派系）
+    //比如在同一个进程和多线程情况下有多个comm通信组
     while (*pp != nullptr && comm->intraComm0 != (*pp)->intraComm0)
       pp = &(*pp)->groupNext[type];                       // 移动到下一个通信器
 
@@ -216,7 +218,8 @@ inline void ncclGroupCommJoin(struct ncclComm* comm, int type) {
     if (*pp == nullptr) {                                 // 如果未找到相同派系的通信器
       pp = &ncclGroupCommHead[type];                      // 重新从链表头开始
       // 按 commHash 升序查找插入位置
-      while (*pp != nullptr && (*pp)->commHash < comm->commHash) pp = &(*pp)->groupNext[type];
+      while (*pp != nullptr && (*pp)->commHash < comm->commHash)
+        pp = &(*pp)->groupNext[type];
     }
     comm->groupNext[type] = *pp;                          // 将当前通信器的 next 指向找到的节点
     *pp = comm;                                           // 将前一个节点的 next 指向当前通信器

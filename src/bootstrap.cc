@@ -490,7 +490,7 @@ static void* bootstrapRoot(void* rargs) {
       // 计算需要发送/接收的节点数（nroots=1 时无需额外处理）
       //该root下有多少个rank
       n2send = nRankFromRoot(iroot, nranks, nroots);
-      // 如果 root 大于 1，nrecv+1，因为需要存储相邻的 rank 地址
+      // 如果 root 大于 1，nrecv需要+1，因为需要存储多root情况下相邻的 rank 地址
       nrecv = n2send + ((nroots > 1) ? 1 : 0);
       // 分配 nrecv 个 ringConnectInfo 和 ncclSocketAddress 用于保存接收到的地址
       // 初始值为 0
@@ -740,7 +740,9 @@ struct bootstrapState {
   // 8 字节的 UDS hash 值
   uint64_t* peerProxyAddressesUDS;
   // 保存所有 rank 的地址，指向数组的地址
+  //代理线程监听地址
   union ncclSocketAddress* peerProxyAddresses;
+  //p2p监听地址
   union ncclSocketAddress* peerP2pAddresses;
 
   // 非预期连接队列

@@ -179,14 +179,17 @@ static inline ncclResult_t ncclCuMemAllocAddr(void **ptr, CUmemGenericAllocation
   CUmemAllocationProp prop = {};
   CUmemAccessDesc accessDesc = {};
   int cudaDev;
+  
   CUDACHECK(cudaGetDevice(&cudaDev));
   CUCHECK(cuMemGetAllocationPropertiesFromHandle(&prop, *handleIn));
   CUCHECK(cuMemGetAllocationGranularity(&granularity, &prop, CU_MEM_ALLOC_GRANULARITY_MINIMUM));
   ALIGN_SIZE(size, granularity);
   /* Reserve a virtual address range */
   CUCHECK(cuMemAddressReserve((CUdeviceptr *)ptr, size, granularity, 0, 0));
+  
   /* Map the virtual address range to the physical allocation */
   CUCHECK(cuMemMap((CUdeviceptr)*ptr, size, 0, *handleIn, 0));
+  
   /* Now allow RW access to the newly mapped memory */
   accessDesc.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
   accessDesc.location.id = cudaDev;

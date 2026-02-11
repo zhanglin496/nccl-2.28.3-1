@@ -561,13 +561,13 @@ static ncclResult_t commAlloc(struct ncclComm* comm, struct ncclComm* parent, in
   ncclMemoryPoolConstruct(&comm->memPool_ncclKernelPlan);
   ncclMemoryPoolConstruct(&comm->memPool_ncclProxyOp);
 
-  // 初始化 group 任务链表头节点
+  // 初始化 group 任务链表头节点，设置为特殊值0x1，表示为初始化状态
   for (int i = 0; i < ncclGroupTaskTypeNum; i++) {
     comm->groupNext[i] = reinterpret_cast<struct ncclComm*>(0x1);
   }
   comm->preconnectNext = reinterpret_cast<struct ncclComm*>(0x1);
 
-  // 验证位图数组大小是否足够
+  // 验证位图数组大小是否足够，8个字节，64个bit位
   static_assert(MAXCHANNELS <= sizeof(*comm->connectSend)*8, "comm->connectSend must have enough bits for all channels");
   static_assert(MAXCHANNELS <= sizeof(*comm->connectRecv)*8, "comm->connectRecv must have enough bits for all channels");
 
@@ -580,7 +580,7 @@ static ncclResult_t commAlloc(struct ncclComm* comm, struct ncclComm* parent, in
   for (int c=0; c < MAXCHANNELS; c++)
     comm->channels[c].id = -1;
 
-  // 处理共享资源（用于 split 等场景）
+  // 处理共享资源（用于 ncclCommSplit 等场景）
   if (parent == NULL || !parent->shareResources) {
     // 创建新的共享资源
     struct ncclSharedResources* sharedRes = NULL;
@@ -1574,6 +1574,7 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
     ncclAtomicRefCountIncrement(&parent->sharedRes->proxyState->refCount);
   } else {
     // 创建 proxy 线程（线程执行 ncclProxyService 函数）
+    //创建uds线程，线程执行函数ncclProxyServiceUDS
     NCCLCHECKGOTO(ncclProxyCreate(comm), ret, fail);
   }
 
@@ -2529,7 +2530,7 @@ ncclResult_t ncclCommInitRank(ncclComm_t* newcomm, int nranks, ncclUniqueId comm
   CUDACHECK(cudaGetDevice(&cudaDev));
 
   // 默认只有一个 root
-  NCCLCHECK(ncclCommInitRankDev(newcomm, nranks, /* root 数量 */1, &commId, myrank, cudaDev, &config, __func__));
+  NCCLCHECK(ncclCommInitRankDev(newcomm, nranks, /* commId 数量 */1, &commId, myrank, cudaDev, &config, __func__));
 
   NVTX3_RANGE_ADD_PAYLOAD(CommInitRank, NcclNvtxParamsCommInitRankSchema,
     NVTX3_PAYLOAD((*newcomm)->commHash, nranks, myrank, cudaDev));

@@ -850,6 +850,8 @@ struct ncclComm {
   // Bitmasks for ncclTransportP2pSetup
   // 每一个 bit 对应通道 id 是否有效
   // 比如 011，表示通道 0，1 有效
+  //每个rank 分配8个字节，最多表示64个通道
+  //|8byte|8byte|...|
   uint64_t* connectSend;  // 发送连接位掩码数组
   uint64_t* connectRecv;  // 接收连接位掩码数组
 
@@ -1033,6 +1035,7 @@ struct ncclComm {
   uint32_t workFifoConsumed;
 
   // Intra-process sync
+  //指向同一进程内第一个 rank 的通信器指针
   // 节点内同步
   // 进程内通信的领导者（可能是自己）
   struct ncclComm* intraComm0; // leader of intra-process comms (self possible)
@@ -1055,7 +1058,7 @@ struct ncclComm {
   // 进程内屏障门（仅 intraComm0 使用）
   uint64_t intraBarrierGate; // only used if this is intraComm0
 
-  // 代理状态
+  // 代理状态，ncclProxyInit中分配
   struct ncclProxyState* proxyState;
   // 存储代理原子减后的引用计数
   int proxyRefCountOld; /* store proxy post-atomic-sub refcount */

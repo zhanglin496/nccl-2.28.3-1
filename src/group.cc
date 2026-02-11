@@ -875,7 +875,8 @@ static ncclResult_t groupLaunch(struct ncclAsyncJob *job_, ncclSimInfo_t* simInf
     // 如果是非销毁作业、关联非阻塞通信器且没有集合通信器，设置异步错误状态
     if (!job->destroyFlag && job->comm && !job->comm->config.blocking && groupCommHeadMain[ncclGroupTaskTypeCollective] == nullptr) // 检查条件
       (void) ncclCommSetAsyncError(job->comm, ret);      // 设置通信器的异步错误状态
-    if (job->destructor) job->destructor((void*)job);     // 如果有销毁函数，调用它
+    if (job->destructor) 
+      job->destructor((void*)job);     // 如果有销毁函数，调用它
   }
 
   // 处理所有类型的通信器，执行资源回收和清理
@@ -979,7 +980,7 @@ ncclResult_t ncclGroupEndInternal(ncclSimInfo_t* simInfo) {
   groupJob->groupRefCount = 0;                            // 初始化引用计数为 0
   groupJob->nonBlockingInit = false;                      // 初始化非阻塞标志为 false
   memcpy(groupJob->groupCommHead, ncclGroupCommHead, sizeof(ncclGroupCommHead)); // 复制通信器链表头数组
-  //taskAppend会设置个ncclGroupCommPreconnectHead
+  //taskAppend会设置ncclGroupCommPreconnectHead
   groupJob->groupCommPreconnectHead = ncclGroupCommPreconnectHead; // 复制预连接通信器链表头
   groupJob->groupError = ncclSuccess;                     // 初始化组错误为成功
   groupJob->abortFlag = false;                            // 初始化中止标志为 false
@@ -1029,6 +1030,7 @@ ncclResult_t ncclGroupEndInternal(ncclSimInfo_t* simInfo) {
       // 创建线程执行非阻塞组操作
       groupJob->base.func = groupLaunchNonBlocking;       // 设置执行函数
       PTHREADCHECKGOTO(pthread_create(&groupJob->base.thread, NULL, ncclAsyncJobMain, (void*)&groupJob->base), "pthread_create", ret, fail); // 创建线程
+      //不等待线程结束，直接返回
       groupJob->nonBlockingInit = true;                   // 设置非阻塞初始化标志为 true
       ret = ncclInProgress;                               // 返回进行中状态
     } else {                                              // 阻塞模式
@@ -1036,6 +1038,7 @@ ncclResult_t ncclGroupEndInternal(ncclSimInfo_t* simInfo) {
       /* 阻塞组 */
       int savedDev;                                       // 保存当前 CUDA 设备
       CUDACHECKGOTO(cudaGetDevice(&savedDev), ret, fail); // 获取当前 CUDA 设备
+      //内部会等待线程结束
       NCCLCHECKGOTO(groupLaunch(&groupJob->base, internalSimInfoPtr), ret, fail); // 执行组启动
       CUDACHECKGOTO(cudaSetDevice(savedDev), ret, fail); // 恢复 CUDA 设备
       if (simInfo)                                        // 如果提供了模拟信息

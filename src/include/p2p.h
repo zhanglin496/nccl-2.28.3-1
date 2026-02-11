@@ -60,6 +60,7 @@ typedef union {
   // Legacy CUDA IPC
   // 传统 CUDA IPC（进程间通信）方式
   cudaIpcMemHandle_t devIpc;                              // CUDA IPC 内存句柄
+  
   // cuMem API support
   // cuMem API 支持（CUDA 11.3+ 的新版内存管理 API）
   struct {

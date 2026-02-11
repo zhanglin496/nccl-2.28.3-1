@@ -65,7 +65,8 @@ void* ncclProxyServiceUDS(void* _args);
 // 返回值：bool 类型，true 表示需要代理，false 表示不需要
 static bool NeedProxy(int type, int pattern, int root, struct ncclRing* ring, int nranks) {
   // 如果是环形或双环形模式，所有 rank 都需要代理
-  if (pattern == ncclPatternRing || pattern == ncclPatternRingTwice) return true;
+  if (pattern == ncclPatternRing || pattern == ncclPatternRingTwice) 
+    return true;
 
   /* 在链式模式中，有一个 rank 不需要代理。我们需要找出它是哪一个 */
   /* 我们应该将 root 与重组后的环中的哪个索引进行比较 */
@@ -1679,7 +1680,7 @@ ncclResult_t ncclProxyConnect(struct ncclComm* comm, int transport, int send, in
   // This usually sends proxyConn->connection to identify which connection this is.
   // However, this is part of the response and therefore is ignored
 
-  //触发创建nccl proxy线程，发送req数据给proxy
+  //触发创建ncclProxyProgress线程，发送req数据给proxy
   NCCLCHECK(ncclProxyCallBlocking(comm, proxyConn, ncclProxyMsgInit, &req, sizeof(req), &resp, sizeof(resp)));
   //获取返回的conn指针，这里因为是多线程，共享相同的地址空间
   proxyConn->connection = resp.connection;
@@ -2175,6 +2176,7 @@ static ncclResult_t proxyConnInit(struct ncclProxyLocalPeer* peer, struct ncclPr
   // 记录调试信息：新代理连接已创建
   INFO(NCCL_NET|NCCL_PROXY, "New proxy %s connection %d from local rank %d, transport %d", (*connection)->send ? "send":"recv", id, (*connection)->tpLocalRank, (*connection)->transport);
   // 原子存储连接状态为已初始化（释放语义）
+  
   __atomic_store_n(&(*connection)->state, connInitialized, __ATOMIC_RELEASE);
   return ncclSuccess;                                      // 返回成功状态
 }
@@ -2279,84 +2281,44 @@ static ncclResult_t proxyProgressAsync(struct ncclProxyAsyncOp* op, struct ncclP
   } else if (op->type == ncclProxyMsgConnect) {            // 如果操作类型是 Connect
     TRACE(NCCL_PROXY, "proxyProgressAsync::proxyConnect() opId=%p op.reqBuff=%p", op->opId, op->reqBuff);
     // 调用传输层的 proxyConnect 函数
-    res = op->connection->tcomm->proxyConnect(op->connection, proxyState, op->reqBuff, op->reqSize, op->respBuff, o
-p->respSize, &done);
+    res = op->connection->tcomm->proxyConnect(op->connection, proxyState, op->reqBuff, op->reqSize, op->respBuff, 
+        op->respSize, &done);
   } else if (op->type == ncclProxyMsgSharedInit) {         // 如果操作类型是 SharedInit
     int nChannels = (int) *op->reqBuff;                    // 获取通道数量（从请求数据中读取）
-    TRACE(NCCL_PROXY, "proxyProgressAsync::ncclProxyMsgSharedInit opId=%p op.reqBuff=%p nChannels=%d", op->opId, o
-p->reqBuff, nChannels);
+    TRACE(NCCL_PROXY, "proxyProgressAsync::ncclProxyMsgSharedInit opId=%p op.reqBuff=%p nChannels=%d", op->opId, op->reqBuff, nChannels);
     // 检查传输层是否支持共享初始化
-    if (op->connection->tcomm->proxySharedInit) r
-        es = op->connection->tcomm->proxySharedInit(op->connection, proxyState, nChannels);
+    if (op->connection->tcomm->proxySharedInit) 
+        res = op->connection->tcomm->proxySharedInit(op->connection, proxyState, nChannels);
     // 原子存储连接状态为共享已初始化
-    __atomic_store_n(&o
-p->connection->state, connSharedInitialized, __ATOMIC_RELEASE);
+    __atomic_store_n(&op->connection->state, connSharedInitialized, __ATOMIC_RELEASE);
   }
-  else if (o
-p->type == ncclProxyMsgInit) {                 // 如果操作类型是 Init
-    TRACE(NCCL_PROXY, "proxyProgressAsync::ncclProxyMsgInit opId=%p op.reqBuff=%p", o
-p->o
-pId, o
-p->reqBuff);
+  else if (op->type == ncclProxyMsgInit) {                 // 如果操作类型是 Init
+    TRACE(NCCL_PROXY, "proxyProgressAsync::ncclProxyMsgInit opId=%p op.reqBuff=%p", op->opId, op->reqBuff);
     // 调用 proxyConnInit 初始化连接
-    res = proxyConnInit(peer, connectionPool, proxyState, (ncclProxyInitReq*) o
-p->reqBuff, (ncclProxyInitResp*) o
-p->respBuff, &o
-p->connection);
-  } else if (o
-p->type == ncclProxyMsgRegister) {           // 如果操作类型是 Register
-    TRACE(NCCL_PROXY, "proxyProgressAsync::ncclProxyMsgRegister opId=%p op.reqBuff=%p, op->reqSize=%d, o
-p->respSize=%d", o
-p->o
-pId, o
-p->reqBuff, o
-p->reqSize, o
-p->respSize);
+    res = proxyConnInit(peer, connectionPool, proxyState, (ncclProxyInitReq*) op->reqBuff, (ncclProxyInitResp*) op->respBuff, &op->connection);
+  } else if (op->type == ncclProxyMsgRegister) {           // 如果操作类型是 Register
+    TRACE(NCCL_PROXY, "proxyProgressAsync::ncclProxyMsgRegister opId=%p op.reqBuff=%p, op->reqSize=%d, op->respSize=%d", op->opId, op->reqBuff,
+        op->reqSize, op->respSize);
     // 调用传输层的 proxyRegister 函数
-    res = o
-p->connection->tcomm->proxyRegister(o
-p->connection, proxyState, o
-p->reqBuff, o
-p->reqSize, o
-p->respBuff, o
-p->respSize, &done);
-  } else if (o
-p->type == ncclProxyMsgDeregister) {         // 如果操作类型是 Deregister
-    TRACE(NCCL_PROXY, "proxyProgressAsync::ncclProxyMsgDeregister opId=%p op.reqBuff=%p, o
-p->reqSize=%d, o
-p->respSize=%d", o
-p->o
-pId, o
-p->reqBuff, o
-p->reqSize, o
-p->respSize);
+    res = op->connection->tcomm->proxyRegister(op->connection, proxyState, op->reqBuff, op->reqSize, op->respBuff, 
+    op->respSize, &done);
+  } else if (op->type == ncclProxyMsgDeregister) {         // 如果操作类型是 Deregister
+    TRACE(NCCL_PROXY, "proxyProgressAsync::ncclProxyMsgDeregister opId=%p op.reqBuff=%p, op->reqSize=%d, op->respSize=%d",
+        op->opId, op->reqBuff, op->reqSize, op->respSize);
     // 调用传输层的 proxyDeregister 函数
-    res = o
-p->connection->tcomm->proxyDeregister(o
-p->connection, proxyState, o
-p->reqBuff, o
-p->reqSize, &done);
+    res = op->connection->tcomm->proxyDeregister(op->connection, proxyState, op->reqBuff, op->reqSize, &done);
   } else
     return ncclInternalError;                             // 未知的操作类型，返回内部错误
 
   // 检查操作是否完成
   if (done) {                                              // 如果操作已完成
-    INFO(NCCL_PROXY, "proxyProgressAsync opId=%p op.type=%d op.reqBuff=%p o
-p->respSize=%d done", o
-p->o
-pId, o
-p->type, o
-p->reqBuff, o
-p->respSize);
+    INFO(NCCL_PROXY, "proxyProgressAsync opId=%p op.type=%d op.reqBuff=%p op->respSize=%d done", op->opId, op->type, 
+        op->reqBuff, op->respSize);
     // 根据操作类型更新连接状态
-    if (o
-p->type == ncclProxyMsgSetup)
-      __atomic_store_n(&o
-p->connection->state, connSetupDone, __ATOMIC_RELEASE);
-    else if (o
-p->type == ncclProxyMsgConnect)
-      __atomic_store_n(&o
-p->connection->state, connConnected, __ATOMIC_RELEASE);
+    if (op->type == ncclProxyMsgSetup)
+      __atomic_store_n(&op->connection->state, connSetupDone, __ATOMIC_RELEASE);
+    else if (op->type == ncclProxyMsgConnect)
+      __atomic_store_n(&op->connection->state, connConnected, __ATOMIC_RELEASE);
     /* if setup or connect is done, we should not return any error at this point since
      * ncclSocketSend might already send the respBuff to the requester. If we still choose
      * to abort and close the connection, it can cause segfault if the requester is using
@@ -2366,31 +2328,21 @@ p->connection->state, connConnected, __ATOMIC_RELEASE);
      * 中止并关闭连接，当请求者正在使用 respBuff 时可能会导致段错误。 */
 
     // 构造 RPC 响应头
-    ncclProxyRpcResponseHeader resp = {o
-p->o
-pId, res, o
-p->respSize};
+    ncclProxyRpcResponseHeader resp = {op->opId, res, op->respSize};
 
-    // Send the o
-pId for referencing async operation
+    // Send the opId for referencing async operation
     // 发送操作 ID 以引用异步操作
-    NCCLCHECK(ncclSocketSend(o
-p->connection->sock, &resp, sizeof(resp)));
+    NCCLCHECK(ncclSocketSend(op->connection->sock, &resp, sizeof(resp)));
 
     // 如果有响应数据，发送响应
-    if (o
-p->respSize) {
+    if (op->respSize) {
       // Send the response
       // 发送响应数据
-      NCCLCHECK(ncclSocketSend(o
-p->connection->sock, o
-p->respBuff, o
-p->respSize));
+      NCCLCHECK(ncclSocketSend(op->connection->sock, op->respBuff, op->respSize));
     }
 
     // 从异步操作队列中移除此操作
-    asyncProxyOpDequeue(peer, o
-p);
+    asyncProxyOpDequeue(peer, op);
     // 减少异步操作计数
     (*asyncOpCount)--;
     return ncclSuccess;                                    // 返回成功状态
@@ -2595,6 +2547,7 @@ void* ncclProxyService(void* _args) {
         peers[s].tpLocalRank = -1;                       // 初始化本地 rank 为 -1（未知）
       }
     }
+
     // 遍历所有对等节点槽位，处理每个对等节点的操作
     for (int s=0; s<maxnpeers; s++) {
       struct ncclProxyLocalPeer* peer = peers+s;         // 获取对等节点指针
@@ -2602,12 +2555,15 @@ void* ncclProxyService(void* _args) {
       int closeConn = 0;                                 // 关闭连接标志
       int type = 0;                                      // 操作类型
       ncclResult_t res = ncclSuccess;                    // 操作结果
-      if (pollfds[s].fd == -1) continue;                 // 跳过无效槽位
+      if (pollfds[s].fd == -1)
+        continue;                 // 跳过无效槽位
 
       // Progress all ops for this ncclProxyLocalPeer
       // 推进此对等节点的所有异步操作
       // 特殊情况：如果正在中止且启用了 cuMem 且不是直接模式，关闭连接
-      if (stop == PROXY_ABORT && ncclCuMemEnable() && ncclCuMemHostEnable() && !proxyState->directMode && __atomic_load_n(&proxyState->stop, __ATOMIC_ACQUIRE)) closeConn = 1;
+      if (stop == PROXY_ABORT && ncclCuMemEnable() && ncclCuMemHostEnable() && !proxyState->directMode && __atomic_load_n(&proxyState->stop, __ATOMIC_ACQUIRE)) 
+        closeConn = 1;
+      
       // 获取此对等节点的异步操作队列头
       ncclProxyAsyncOp* op = peer->asyncOps;
       // 遍历所有异步操作，推进它们的执行
