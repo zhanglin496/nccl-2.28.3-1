@@ -979,6 +979,7 @@ struct ncclComm {
 
   // Buffer sizes
   // 各协议的缓冲区大小（LL, LL128, Simple）
+  //computeBuffSizes函数中设置
   int buffSizes[NCCL_NUM_PROTOCOLS];
   // P2P 块大小
   int p2pChunkSize;

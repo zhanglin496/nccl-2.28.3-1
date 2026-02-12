@@ -1,26 +1,43 @@
 /*************************************************************************
  * Copyright (c) 2022, NVIDIA CORPORATION. All rights reserved.
+ * 版权所有 (c) 2022，NVIDIA 公司。保留所有权利。
  *
  * See LICENSE.txt for license information
+ * 详见 LICENSE.txt 获取许可证信息
  ************************************************************************/
 
+// 头文件保护宏开始：防止头文件被重复包含
 #ifndef NCCL_CUDAWRAP_H_
+// 定义头文件保护宏
 #define NCCL_CUDAWRAP_H_
 
+// 包含 CUDA 驱动 API 头文件，提供底层 CUDA 驱动功能
 #include <cuda.h>
+// 包含 CUDA 运行时 API 头文件，提供高层 CUDA 运行时功能
 #include <cuda_runtime.h>
+// 包含 NCCL 内部检查头文件，提供参数验证和错误检查宏
 #include "checks.h"
 
-// Is cuMem API usage enabled
+// 外部函数声明：查询 cuMem API 是否启用
+// cuMem API 是 CUDA 的统一内存管理接口，提供跨进程的内存共享功能
+// 返回值：非零表示启用，零表示禁用
 extern int ncclCuMemEnable();
+// 外部函数声明：查询 cuMem Host API 是否启用
+// cuMem Host API 允许主机端直接访问 CUDA 统一内存
+// 返回值：非零表示启用，零表示禁用
 extern int ncclCuMemHostEnable();
 
+// CUDA 运行时版本条件编译：CUDA 11.0 及以上版本包含 Typedef 头文件
+// cudaTypedefs.h 提供了 CUDA 类型的类型定义（如 cudaError_t）
 #if CUDART_VERSION >= 11030
 #include <cudaTypedefs.h>
+#endif
 
-// Handle type used for cuMemCreate()
+// 外部变量声明：cuMemCreate() 使用的内存分配句柄类型
+// CUmemAllocationHandleType 是 CUDA 统一内存 API 的句柄类型
+// 用于标识不同类型的内存分配（设备内存、主机内存、统一内存等）
 extern CUmemAllocationHandleType ncclCuMemHandleType;
-
+// 结束 CUDA 11.0+ 版本的条件编译
 #endif
 
 #define CUPFN(symbol) pfn_##symbol
