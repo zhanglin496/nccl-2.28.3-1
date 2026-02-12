@@ -492,8 +492,39 @@ exit:
 // ============================================================================
 // commAlloc - 分配并初始化通信器结构
 // ============================================================================
+//
+// 这个函数是 NCCL 通信器创建的第一步，负责初始化基本的通信器结构
+//
+// 函数调用时机：
+// - ncclCommInitRank：创建新的通信器
+// - ncclCommSplit：从父通信器分割出子通信器
+//
+// 主要功能：
+// 1. 参数验证（设备数量、rank 编号）
+// 2. 初始化内存管理系统
+// 3. 加载网络插件
+// 4. 获取 CUDA 设备信息
+// 5. 设置共享资源（父 comm 复用或创建新的）
+// 6. 初始化 CUDA 流和事件
+//
+// 参数说明：
+// - comm：要初始化的通信器结构（调用者已分配内存）
+// - parent：父通信器（如果是分割创建的子 comm），NULL 表示根 comm
+// - ndev：设备数量（总 rank 数量）
+// - rank：当前 rank 的编号（0 到 ndev-1）
+//
+// ============================================================================
 static ncclResult_t commAlloc(struct ncclComm* comm, struct ncclComm* parent, int ndev, int rank) {
+  // ============================================================
   // 参数验证
+  // ============================================================
+  // ndev：设备数量（GPU 数量）
+  // rank：当前 rank 的编号（0 到 ndev-1）
+  //
+  // 这些验证确保参数在合法范围内
+  // 避免后续访问数组越界或逻辑错误
+  // ============================================================
+
   if (ndev < 1) {
     WARN("invalid device count (%d) requested", ndev);
     return ncclInvalidArgument;
@@ -503,24 +534,96 @@ static ncclResult_t commAlloc(struct ncclComm* comm, struct ncclComm* parent, in
     return ncclInvalidArgument;
   }
 
+  // ============================================================
   // 初始化内存栈（用于管理 comm 的内存分配）
+  // ============================================================
+  //
+  // NCCL 使用内存栈（Memory Stack）来管理动态分配的内存
+  //
+  // 为什么使用内存栈而不是直接 malloc/free？
+  // 1. 批量释放：一次性释放整个栈，无需逐个 free
+  // 2. 减少碎片：栈式分配减少内存碎片
+  // 3. 性能：栈分配比堆分配更快
+  // 4. 简化：无需跟踪每个分配的生命周期
+  //
+  // memPermanent（永久内存栈）：
+  // - 存储 comm 生命周期内一直需要的数据
+  // - 例如：通道配置、拓扑信息、rank 映射表等
+  // - 在 comm 销毁时释放
+  //
+  // memScoped（作用域内存栈）：
+  // - 存储临时数据，可以在某个操作完成后释放
+  // - 例如：临时缓冲区、中间计算结果等
+  // - 可以在特定时间点批量释放
+  //
+  // 内存栈的工作原理：
+  //   分配时：栈指针向上移动，返回新地址
+  //   释放时：栈指针回退到之前的标记位置
+  //   销毁时：释放整个栈占用的内存块
+  //
+  // ============================================================
+
   ncclMemoryStackConstruct(&comm->memPermanent);  // 永久内存（comm 生命周期内一直有效）
   ncclMemoryStackConstruct(&comm->memScoped);     // 作用域内存（可以释放）
-  comm->destructorHead = nullptr;
+  comm->destructorHead = nullptr;                 // 析构函数链表头（用于资源清理）
 
+  // ============================================================
   // 设置基本信息
+  // ============================================================
+  // rank：当前 rank 的全局编号（在整个通信域中唯一）
+  // nRanks：通信域中的总 rank 数量
+  //
+  // 这些信息在后续的拓扑计算、通道配置中都会用到
+  // ============================================================
+
   comm->rank = rank;          // 当前 rank 的编号
   comm->nRanks = ndev;        // 总 rank 数量
 
+  // ============================================================
   // 初始化网络插件
-  // ncclNetInit() 按顺序尝试加载插件，一旦某个插件分配成功，循环立即 break
-  // 设置 comm 中的 ncclNet 和 ncclCollNet，ncclCollNet 可能为 NULL
+  // ============================================================
+  //
+  // NCCL 支持网络插件系统，允许第三方提供网络传输实现
+  //
+  // ncclNetInit() 的工作流程：
+  // 1. 尝试加载网络插件（libnccl-net.so）
+  // 2. 如果环境变量 NCCL_NET_PLUGIN 指定了插件，优先加载
+  // 3. 否则，尝试加载内置的网络实现（Socket、IB 等）
+  // 4. 按顺序尝试，第一个成功的插件被选中
+  //
+  // 设置 comm 中的字段：
+  // - ncclNet：网络插件接口函数表
+  // - ncclCollNet：集合网络插件（可选，可能为 NULL）
+  //
+  // 网络插件提供的功能：
+  // - 发送/接收数据
+  // - 建立连接
+  // - 处理 RDMA 操作
+  // - 管理 DMA 内存
+  //
+  // ============================================================
+
   NCCLCHECK(ncclNetInit(comm));
 
   // 记录使用的网络类型
   INFO(NCCL_INIT, "Using network %s", comm->ncclNet->name);
 
-  // 如果是子通信且共享资源，检查网络类型是否一致
+  // ============================================================
+  // 网络类型一致性检查
+  // ============================================================
+  //
+  // 如果是子通信（从 ncclCommSplit 创建）且共享资源：
+  // - 必须使用与父 comm 相同的网络插件
+  // - 因为共享资源包括网络连接和状态
+  // - 不同的网络插件无法共享这些资源
+  //
+  // 例如：
+  // - 父 comm 使用 IB 插件
+  // - 子 comm 也必须使用 IB 插件
+  // - 否则无法共享网络连接
+  //
+  // ============================================================
+
   if (parent && parent->shareResources) {
     if (parent->ncclNet != comm->ncclNet) {
       WARN("Split shares resources, but parent comm netName %s is different from child comm netName %s", parent->ncclNet->name, comm->ncclNet->name);
@@ -528,38 +631,216 @@ static ncclResult_t commAlloc(struct ncclComm* comm, struct ncclComm* parent, in
     }
   }
 
+  // ============================================================
   // 立即创建 CUDA 对象以验证设备状态
-  // 如果设备有问题（最常见的原因 #1），最好早点知道
+  // ============================================================
+  //
+  // 这一步很关键，尽早验证 CUDA 设备可用性
+  //
+  // 常见问题 #1：设备被其他进程占用
+  // 常见问题 #2：CUDA 驱动版本不匹配
+  // 常见问题 #3：GPU 处于异常状态
+  //
+  // 早点发现这些问题可以：
+  // 1. 避免浪费初始化时间
+  // 2. 提供更清晰的错误信息
+  // 3. 允许应用程序提前失败
+  //
+  // cudaGetDevice：获取当前 CUDA 设备编号
+  // - 这是调用线程当前关联的设备
+  // - 必须与 comm->rank 对应的设备一致
+  //
+  // ncclCudaContextTrack：跟踪 CUDA 上下文
+  // - 获取当前 CUDA 上下文
+  // - 保存到 comm->context 中
+  // - 用于后续的 CUDA 操作
+  //
+  // ============================================================
+
   CUDACHECK(cudaGetDevice(&comm->cudaDev));    // 获取当前 CUDA 设备
 
   NCCLCHECK(ncclCudaContextTrack(&comm->context));  // 获取并跟踪 CUDA 上下文
 
+  // ============================================================
   // 获取 GPU 设备的 bus ID（PCI 地址）
+  // ============================================================
+  //
+  // bus ID 是 GPU 在 PCIe 总线上的地址
+  // 格式：Domain:Bus:Device.Function（如 0000:04:00.0）
+  //
+  // bus ID 的用途：
+  // 1. 拓扑发现：确定 GPU 之间的物理连接关系
+  // 2. P2P 通信：判断两个 GPU 是否可以直接通信
+  // 3. NUMA 亲和性：确定 GPU 与 CPU 的亲和关系
+  // 4. NVLink 检测：判断 GPU 之间是否有 NVLink 连接
+  //
+  // getBusId：将 cudaDev 转换为整数形式的 bus ID
+  // - 整数形式便于比较和计算
+  // - 存储 64 位整数，足够表示完整的 PCI 地址
+  //
+  // ============================================================
+
   NCCLCHECK(getBusId(comm->cudaDev, &comm->busId));
 
-  // 获取 NVML 设备句柄
-  nvmlDevice_t nvmlDev;
-  char busId[NVML_DEVICE_PCI_BUS_ID_BUFFER_SIZE];
+  // ============================================================
+  // 获取 NVML 设备句柄和索引
+  // ============================================================
+  //
+  // NVML (NVIDIA Management Library) 是 NVIDIA 的管理库
+  //
+  // 为什么要使用 NVML？
+  // 1. 获取 CUDA API 不提供的信息（如温度、功耗）
+  // 2. 获取设备的持久索引（nvmlDev）
+  // 3. 设备管理和监控
+  //
+  // nvmlDev 和 cudaDev 的区别：
+  // - cudaDev：CUDA 运行时的设备编号（0, 1, 2, ...）
+  // - nvmlDev：NVML 的设备索引，通常是持久的
+  //
+  // 持久索引的重要性：
+  // - cudaDev 可能因 GPU 热插拔而改变
+  // - nvmlDev 在系统重启前保持不变
+  // - 用于跨进程的设备识别
+  //
+  // 转换流程：
+  // 1. cudaDev → busId（通过 getBusId）
+  // 2. busId → 字符串（通过 int64ToBusId）
+  // 3. 字符串 → nvmlDev（通过 ncclNvmlDeviceGetHandleByPciBusId）
+  // 4. nvmlDev → nvmlDev 索引（通过 ncclNvmlDeviceGetIndex）
+  //
+  // ============================================================
+
+  nvmlDevice_t nvmlDev;                                    // NVML 设备句柄
+  char busId[NVML_DEVICE_PCI_BUS_ID_BUFFER_SIZE];          // busId 字符串缓冲区
   // 将 busId 转换为字符串
   NCCLCHECK(int64ToBusId(comm->busId, busId));
   // 通过 bus ID 获取 NVML 设备句柄
   NCCLCHECK(ncclNvmlDeviceGetHandleByPciBusId(busId, &nvmlDev));
   NCCLCHECK(ncclNvmlDeviceGetIndex(nvmlDev, (unsigned int*)&comm->nvmlDev));
 
+  // ============================================================
+  // 获取 GPU 计算能力
+  // ============================================================
+  //
+  // 计算能力（Compute Capability）表示 GPU 的架构代数
+  //
+  // 格式：XY（如 70、75、80、86、90）
+  // - X：主版本号（架构代数）
+  // - Y：次版本号（架构更新）
+  //
+  // 常见计算能力：
+  // - 70：Volta (V100)
+  // - 75：Turing (T4, RTX 2080)
+  // - 80：Ampere (A100)
+  // - 86：Ampere (RTX 3090)
+  // - 90：Hopper (H100)
+  //
+  // 计算能力的用途：
+  // 1. 选择合适的内核实现
+  // 2. 确定支持的 CUDA 特性
+  // 3. 性能调优和优化
+  //
+  // TRACE：调试级别的日志输出
+  // - 包含 comm 的关键信息
+  // - 用于调试和问题诊断
+  //
+  // ============================================================
+
   // 获取 GPU 计算能力（如 70、75、80 等）
   comm->compCap = ncclCudaCompCap();
   TRACE(NCCL_INIT,"comm %p rank %d nranks %d cudaDev %d busId %lx compCap %d", comm, rank, ndev, comm->cudaDev, comm->busId, comm->compCap);
 
+  // ============================================================
   // 其他配置
+  // ============================================================
+  //
+  // checkPointers：检查指针的有效性
+  // - 环境变量：NCCL_CHECK_POINTERS
+  // - 用于调试，检测无效的内存访问
+  // - 生产环境通常关闭（性能影响）
+  //
+  // dmaBufSupport：DMA 缓冲区支持
+  // - 检测是否支持 DMA 缓冲区
+  // - DMA 可以减少内存拷贝，提高性能
+  // - 依赖硬件和驱动支持
+  //
+  // ============================================================
+
   comm->checkPointers = ncclParamCheckPointers() == 1 ? true : false;
   comm->dmaBufSupport = (dmaBufSupported(comm) == ncclSuccess) ? true : false;
 
+  // ============================================================
   // 清零 CollNet 支持矩阵
+  // ============================================================
+  //
+  // CollNet (Collective Network) 支持矩阵
+  //
+  // 这个矩阵记录哪些 GPU 对之间支持 CollNet
+  // - 二维矩阵：nRanks × nRanks
+  // - collNetSupportMatrix[i][j]：rank i 和 rank j 之间的 CollNet 支持
+  //
+  // 初始化为 0：
+  // - 默认不支持 CollNet
+  // - 后续根据硬件检测更新
+  //
+  // CollNet 是什么？
+  // - 使用专用网络硬件的集合通信
+  // - 例如：BlueField DPU、NVSwitch
+  // - 比传统 Ring/Tree 算法更快
+  //
+  // ============================================================
+
   memset(comm->collNetSupportMatrix, 0, sizeof(comm->collNetSupportMatrix));
 
+  // ============================================================
   // 构造内存池（用于内核计划）
+  // ============================================================
+  //
+  // NCCL 使用内存池来管理特定类型的内存分配
+  //
+  // memPool_ncclKernelPlan：
+  // - 用于内核计划（Kernel Planner）的内存池
+  // - 存储内核执行计划和相关信息
+  //
+  // memPool_ncclProxyOp：
+  // - 用于 Proxy 操作的内存池
+  // - 存储 Proxy 线程的请求和响应
+  //
+  // 内存池的优势：
+  // 1. 减少分配/释放开销
+  // 2. 提高内存局部性
+  // 3. 简化内存管理
+  //
+  // ============================================================
+
   ncclMemoryPoolConstruct(&comm->memPool_ncclKernelPlan);
   ncclMemoryPoolConstruct(&comm->memPool_ncclProxyOp);
+
+  // ============================================================
+  // 初始化 group 任务链表
+  // ============================================================
+  //
+  // NCCL 支持组操作（Group Calls）：
+  // - 多个通信操作可以一起提交
+  // - 例如：ncclGroupStart() ... ncclAllReduce() ... ncclGroupEnd()
+  //
+  // groupNext 数组：
+  // - 每个 ncclGroupTaskType 对应一个链表
+  // - 链接所有参与组操作的 comm
+  //
+  // 特殊值 0x1：
+  // - 表示链表头部的未初始化状态
+  // - NULL (0x0) 是有效的链表结尾
+  // - 0x1 明确表示"未初始化"
+  //
+  // ncclGroupTaskTypeNum：
+  // - 组操作类型的数量
+  //
+  // preconnectNext：
+  // - 预连接链表
+  // - 用于跟踪需要预连接的 comm
+  //
+  // ============================================================
 
   // 初始化 group 任务链表头节点，设置为特殊值0x1，表示为初始化状态
   for (int i = 0; i < ncclGroupTaskTypeNum; i++) {
@@ -567,34 +848,176 @@ static ncclResult_t commAlloc(struct ncclComm* comm, struct ncclComm* parent, in
   }
   comm->preconnectNext = reinterpret_cast<struct ncclComm*>(0x1);
 
+  // ============================================================
+  // 验证位图数组大小是否足够
+  // ============================================================
+  //
+  // connectSend 和 connectRecv 是位图数组
+  // - 每个 rank 对应一个 uint64_t（8 字节，64 位）
+  // - 每个位表示一个通道的连接状态
+  //
+  // MAXCHANNELS：
+  // - 最大通道数（通常为 64）
+  // - 不能超过 uint64_t 的位数
+  //
+  // static_assert：
+  // - 编译时断言
+  // - 如果条件不满足，编译失败
+  // - 确保在编译时发现配置错误
+  //
+  // ============================================================
+
   // 验证位图数组大小是否足够，8个字节，64个bit位
   static_assert(MAXCHANNELS <= sizeof(*comm->connectSend)*8, "comm->connectSend must have enough bits for all channels");
   static_assert(MAXCHANNELS <= sizeof(*comm->connectRecv)*8, "comm->connectRecv must have enough bits for all channels");
+
+  // ============================================================
+  // 分配连接位图数组
+  // ============================================================
+  //
+  // connectSend[i]：第 i 个 rank 的发送连接位图
+  // - 第 j 位为 1：向 rank j 的第 j 个通道发送已连接
+  // - 第 j 位为 0：未连接
+  //
+  // connectRecv[i]：第 i 个 rank 的接收连接位图
+  // - 第 j 位为 1：从 rank j 的第 j 个通道接收已连接
+  // - 第 j 位为 0：未连接
+  //
+  // 位图的使用：
+  // - 快速查询某个通道是否已连接
+  // - 批量设置连接状态
+  // - 减少内存占用（相比布尔数组）
+  //
+  // 大小：nRanks 个 uint64_t
+  // - 每个 rank 一个位图
+  // - 每个位图记录与所有其他 rank 的连接状态
+  //
+  // ============================================================
 
   // 分配连接位图数组（记录每个 rank 的哪些通道已连接）
   // 大小为 8 字节 * nranks
   NCCLCHECK(ncclCalloc(&comm->connectSend, comm->nRanks));
   NCCLCHECK(ncclCalloc(&comm->connectRecv, comm->nRanks));
 
+  // ============================================================
+  // 标记通道为未初始化状态
+  // ============================================================
+  //
+  // NCCL 最多支持 MAXCHANNELS 个通道
+  // - 每个通道是一个独立的通信路径
+  // - 通道可以并行工作，提高带宽
+  //
+  // channels[c].id：
+  // - 通道编号（0 到 nChannels-1）
+  // - -1 表示未初始化
+  //
+  // 初始化为 -1：
+  // - 标记所有通道为未使用状态
+  // - 后续根据拓扑需求激活部分通道
+  // - 未使用的通道不占用资源
+  //
+  // ============================================================
+
   // 标记通道为未初始化状态
   for (int c=0; c < MAXCHANNELS; c++)
     comm->channels[c].id = -1;
 
+  // ============================================================
   // 处理共享资源（用于 ncclCommSplit 等场景）
+  // ============================================================
+  //
+  // 共享资源（Shared Resources）机制：
+  //
+  // 背景：
+  // - ncclCommSplit 可以从父 comm 创建子 comm
+  // - 子 comm 可以选择共享父 comm 的某些资源
+  // - 共享资源可以提高效率和减少开销
+  //
+  // 两种模式：
+  //
+  // 1. 创建新的共享资源（parent == NULL 或 !parent->shareResources）：
+  //    - 这是一个独立的 comm，不共享资源
+  //    - 需要创建新的 SharedResources 结构
+  //    - 分配新的 CUDA 流、事件等资源
+  //
+  // 2. 复用父 comm 的共享资源（parent && parent->shareResources）：
+  //    - 这是一个子 comm，与父 comm 共享资源
+  //    - 只需增加引用计数
+  //    - 避免重复创建资源
+  //
+  // 共享的资源包括：
+  // - CUDA 流（deviceStream、hostStream）
+  // - CUDA 事件（launchEvent、scratchEvent）
+  // - Proxy 线程和状态
+  // - 内存池
+  // - 拓扑信息（tpRankToLocalRank 等）
+  //
+  // 引用计数（refCount）：
+  // - 记录有多少个 comm 在使用这个 SharedResources
+  // - 创建时设为 1
+  // - 每增加一个使用者，引用计数 +1
+  // - comm 销毁时，引用计数 -1
+  // - 引用计数为 0 时，释放 SharedResources
+  //
+  // owner 字段：
+  // - 记录是哪个 comm 创建了这个 SharedResources
+  // - 用于调试和资源清理
+  //
+  // ============================================================
+
   if (parent == NULL || !parent->shareResources) {
+    // ============================================================
     // 创建新的共享资源
+    // ============================================================
+
     struct ncclSharedResources* sharedRes = NULL;
     NCCLCHECK(ncclCalloc(&sharedRes, 1));
-  
+
     /* 大部分属性稍后在 initTransportsRank() 中设置 */
     //记录是那个通信器创建了这个sharedRes
     sharedRes->owner = comm;           // 记录谁拥有这个 comm
     sharedRes->tpNRanks = comm->nRanks;  // 记录总的 ranks 数
     NCCLCHECK(ncclCalloc(&sharedRes->tpRankToLocalRank, comm->nRanks));
 
+    // ============================================================
+    // 创建 CUDA 流
+    // ============================================================
+    //
+    // deviceStream：设备流
+    // - 用于在设备上执行操作
+    // - 例如：内核启动、内存拷贝
+    //
+    // hostStream：主机流
+    // - 用于主机端的操作
+    // - 例如：回调、内存管理
+    //
+    // ncclStrongStream：
+    // - NCCL 的强类型流封装
+    // - 支持 CUDA Graph
+    // - 提供更强的类型安全
+    //
+    // ============================================================
+
     // 创建 2 个 CUDA 流（用于内核启动）
     NCCLCHECK(ncclStrongStreamConstruct(&sharedRes->deviceStream));
     NCCLCHECK(ncclStrongStreamConstruct(&sharedRes->hostStream));
+
+    // ============================================================
+    // 创建 CUDA 事件
+    // ============================================================
+    //
+    // launchEvent：启动事件
+    // - 用于标记内核启动的完成
+    //
+    // scratchEvent：临时事件
+    // - 用于各种临时同步需求
+    //
+    // cudaEventDisableTiming：
+    // - 禁用时间记录
+    // - 减少事件创建和记录的开销
+    // - NCCL 只需要同步，不需要计时
+    //
+    // ============================================================
 
     // 创建 2 个 CUDA event
     CUDACHECK(cudaEventCreateWithFlags(&sharedRes->launchEvent, cudaEventDisableTiming));
@@ -603,26 +1026,155 @@ static ncclResult_t commAlloc(struct ncclComm* comm, struct ncclComm* parent, in
     comm->sharedRes = sharedRes;
     sharedRes->refCount = 1;  // 引用计数设为 1
   } else {
+    // ============================================================
+    // 和 parent 共享相同的资源
+    // ============================================================
+    //
+    // 子 comm 复用父 comm 的 SharedResources
+    // 只需增加引用计数
+    //
+    // 原子操作：
+    // - 使用原子操作确保线程安全
+    // - 多个线程可能同时创建子 comm
+    //
+    // ============================================================
+
     // 和 parent 共享相同的资源
     comm->sharedRes = parent->sharedRes;
     ncclAtomicRefCountIncrement(&parent->sharedRes->refCount);
   }
 
+  // ============================================================
+  // 初始化 topParentRanks 数组
+  // ============================================================
+  //
+  // topParentRanks：记录每个 rank 在最顶层父 comm 中的 rank 号
+  //
+  // 这个数组用于：
+  // 1. 通信域分割（ncclCommSplit）
+  // 2. 嵌套分割（多层分割）
+  // 3. 跟踪原始 rank 映射
+  //
+  // 为什么要记录 top parent ranks？
+  // - 子 comm 的 rank 编号会改变
+  // - 但有时需要知道原始的 rank 号
+  // - 用于资源映射和调试
+  //
+  // 示例：
+  //   顶层 comm：8 个 ranks [0, 1, 2, 3, 4, 5, 6, 7]
+  //   分割后：子 comm A 有 ranks [0, 2, 4, 6]
+  //   对于子 comm A 的 rank 0（原始 rank 0）：
+  //     - comm->rank = 0（子 comm 中的 rank）
+  //     - topParentRanks[0] = 0（顶层 comm 中的 rank）
+  //   对于子 comm A 的 rank 1（原始 rank 2）：
+  //     - comm->rank = 1（子 comm 中的 rank）
+  //     - topParentRanks[1] = 2（顶层 comm 中的 rank）
+  //
+  // 如果 comm->topParentRanks 已经存在：
+  // - 说明是从父 comm 继承的
+  // - 不需要重新分配
+  //
+  // ============================================================
+
   // 初始化 topParentRanks 数组
   if (comm->topParentRanks == NULL) {
     NCCLCHECK(ncclCalloc(&comm->topParentRanks, comm->nRanks));
     // 记录 parent 的 rank 号
+    // 对于根 comm，topParentRanks[i] = i（自己就是顶层）
     for (int i = 0; i < comm->nRanks; ++i)
       comm->topParentRanks[i] = i;
   }
+
+  // ============================================================
+  // 初始化队列
+  // ============================================================
+  //
+  // NCCL 使用多种无锁队列进行异步操作
+  //
+  // callbackQueue：回调队列
+  // - 多生产者单消费者（MPSC）队列
+  // - 存储待执行的回调函数
+  // - 用于异步执行清理、通知等操作
+  //
+  // legacyRegCleanupQueue：旧版注册清理队列
+  // - 存储需要清理的内存注册
+  // - 用于异步释放 DMA 内存注册
+  //
+  // ceInitTaskQueue：集合引擎初始化任务队列
+  // - 存储集合引擎的初始化任务
+  // - 用于异步初始化集合引擎
+  //
+  // ncclIntruQueue：
+  // - 无侵入式队列（Intrusive Queue）
+  // - 节点自带链接字段，无需额外分配
+  // - 高性能，适合频繁操作
+  //
+  // ============================================================
 
   // 初始化队列（用于回调、注册清理等）
   ncclIntruQueueMpscConstruct(&comm->callbackQueue);
   ncclIntruQueueConstruct(&comm->legacyRegCleanupQueue);
   ncclIntruQueueConstruct(&comm->ceInitTaskQueue);
 
+  // ============================================================
+  // 获取系统页大小
+  // ============================================================
+  //
+  // 系统页大小（Page Size）：
+  // - 虚拟内存管理的最小单位
+  // - 通常是 4KB（x86）或 64KB（某些 ARM）
+  //
+  // 用途：
+  // - 内存对齐
+  // - DMA 内存分配
+  // - 共享内存创建
+  //
+  // regCache：
+  // - 内存注册缓存
+  // - pageSize 用于确保内存对齐
+  //
+  // sysconf(_SC_PAGESIZE)：
+  // - POSIX 标准函数
+  // - 返回系统的页大小
+  //
+  // ============================================================
+
   // 获取系统页大小
   comm->regCache.pageSize = sysconf(_SC_PAGESIZE);
+
+  // ============================================================
+  // 创建 CUDA 内存池
+  // ============================================================
+  //
+  // CUDA 内存池（Memory Pool）是 CUDA 11.2+ 引入的优化
+  //
+  // 为什么使用内存池？
+  // 1. 减少分配/释放开销
+  // 2. 提高内存重用率
+  // 3. 减少内存碎片
+  // 4. 支持异步分配
+  //
+  // cudaMemPoolProps：内存池属性
+  // - allocType：分配类型
+  //   - cudaMemAllocationTypePinned：锁页内存（不会被换出）
+  // - handleTypes：句柄类型
+  //   - cudaMemHandleTypeNone：不导出（不需要跨进程共享）
+  // - location：内存位置
+  //   - cudaMemLocationTypeDevice：设备内存
+  //   - id：设备编号
+  //
+  // cudaMemPoolAttrReleaseThreshold：
+  // - 释放阈值
+  // - 当内存池的空闲内存超过此阈值时，释放回系统
+  // - ~uint64_t(0) = UINT64_MAX：表示不自动释放
+  // - 保留所有分配的内存，提高后续分配速度
+  //
+  // do-while(0) 结构：
+  // - 创建一个临时作用域
+  // - 避免变量名冲突（如 props、releaseThreshold）
+  // - 保证只执行一次
+  //
+  // ============================================================
 
   // 创建 CUDA 内存池
   do {
@@ -635,6 +1187,21 @@ static ncclResult_t commAlloc(struct ncclComm* comm, struct ncclComm* parent, in
     uint64_t releaseThreshold = ~uint64_t(0);           // 设置释放阈值为最大值
     CUDACHECK(cudaMemPoolSetAttribute(comm->memPool, cudaMemPoolAttrReleaseThreshold, &releaseThreshold));
   } while (0);
+
+  // ============================================================
+  // 初始化事件回调队列
+  // ============================================================
+  //
+  // eventCallbackQueue：事件回调队列
+  // - 存储 CUDA 事件的回调函数
+  // - 用于异步处理事件完成通知
+  //
+  // 应用场景：
+  // - 内核执行完成后的回调
+  // - 内存拷贝完成后的回调
+  // - 用户自定义的异步操作
+  //
+  // ============================================================
 
   // 初始化事件回调队列
   ncclIntruQueueConstruct(&comm->eventCallbackQueue);
