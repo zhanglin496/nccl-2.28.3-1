@@ -954,43 +954,147 @@ NCCL_PARAM(RasEnable, "RAS_ENABLE", 1);                // 是否启用 RAS
 // bootstrapInit - Bootstrap 初始化主函数
 // 这是每个 rank 调用的初始化函数
 // ============================================================================
+//
+// 这个函数是 NCCL Bootstrap 阶段的核心，负责建立初始化通信连接
+//
+// 函数调用时机：
+// - ncclCommInitRank：创建新的通信器时
+// - 每个 rank 都会调用此函数
+// - 在集体操作开始之前完成
+//
+// Bootstrap 阶段的目标：
+// 1. 建立基本的点对点连接
+// 2. 收集所有 rank 的地址信息
+// 3. 初始化 Proxy 服务
+// 4. 为后续的拓扑发现和算法选择做准备
+//
+// 主要功能：
+// 1. 创建 bootstrap 状态结构
+// 2. 创建监听 Socket（环形连接和 Root 连接）
+// 3. 向 Root 节点注册并发送连接信息
+// 4. 从 Root 节点获取下一个 rank 的连接信息
+// 5. 建立环形连接
+// 6. 收集所有 rank 的地址信息（AllGather）
+// 7. 初始化 Proxy 服务和 RAS 子系统
+//
+// 参数说明：
+// - nHandles：Root 节点的数量（handles 数组的长度）
+// - handles：Root 节点的句柄数组（包含 IP 和端口信息）
+//            每个 rank 通过这些 handles 连接到 Root 节点
+// - comm：要初始化的通信器
+//
+// Root 节点的作用：
+// - Root 节点是预先启动的辅助进程
+// - 负责收集和分发 rank 的连接信息
+// - 帮助 ranks 之间建立初始连接
+// - 在大规模集群中，可以有多个 Root 节点分担负载
+//
+// 初始化流程：
+// 1. Rank 创建监听 Socket
+// 2. Rank 向 Root 发送自己的监听地址
+// 3. Root 收集所有 ranks 的地址
+// 4. Rank 从 Root 获取环形拓扑中下一个 rank 的地址
+// 5. Rank 建立环形连接
+// 6. 通过环形连接进行 AllGather，收集所有 ranks 的地址
+//
+// ============================================================================
 ncclResult_t bootstrapInit(int nHandles, void* handles, struct ncclComm* comm) {
+  // ============================================================
+  // 变量声明
+  // ============================================================
+  // result：函数返回值，ncclSuccess 表示成功
   ncclResult_t result = ncclSuccess;
+  // rank：当前 rank 在通信域中的编号（0 到 nranks-1）
   int rank = comm->rank;
+  // nranks：通信域中的总 rank 数量
   int nranks = comm->nRanks;
+  // state：Bootstrap 状态结构指针，包含所有 Bootstrap 相关信息
   struct bootstrapState* state;
+  // proxySocket：Proxy 服务的 Socket 指针，用于异步操作
   struct ncclSocket* proxySocket;
+  // sock：临时 Socket，用于接收 Root 返回的信息
+  // listenSockRoot：监听 Root 连接的 Socket
   struct ncclSocket sock, listenSockRoot;
+  // info：发送给 Root 的信息结构，包含当前 rank 的地址信息
   struct extInfo info = {0};
+  // nextPeer：下一个 rank 的连接信息（从 Root 获取）
   union ringConnectInfo nextPeer;
+  // performRasAddRanks：是否执行 RAS AddRanks 操作
   bool performRasAddRanks = true;
+  // rasRanks：RAS rank 初始化信息数组
   struct rasRankInit* rasRanks = nullptr;
+
+  // ============================================================
+  // 性能计时器数组
+  // ============================================================
+  // 用于统计 Bootstrap 各阶段的耗时
+  // BOOTSTRAP_INIT_TIME_*：TOTAL, CREATE, DELAY, SEND, RECV, RING
+  // ============================================================
 
   uint64_t timers[BOOTSTRAP_INIT_TIME_N] = {0};
 
+  // ============================================================
+  // 创建并初始化 bootstrap 状态结构
+  // ============================================================
+  // bootstrapState 包含：rank 信息、网络连接状态、Peer 地址信息、Socket 句柄
+  // comm->magic 和 state->magic：魔数，用于验证连接的合法性
+  // 取自第一个 handle 的 magic
+  // ============================================================
+
+  // 分配并清零 bootstrapState 结构
   NCCLCHECK(ncclCalloc(&state, 1));
+  // 设置当前 rank 号
   state->rank = rank;
+  // 设置总 rank 数
   state->nranks = nranks;
+  // 设置 CUDA 设备编号
   state->cudaDev = comm->cudaDev;
+  // 设置中止标志指针
   state->abortFlag = comm->abortFlag;
+  // 设置网络插件接口
   state->net = comm->ncclNet;
-  // 记录 bootstrap 地址信息
+  // 记录 bootstrap 地址信息，将 state 保存到 comm 中
   comm->bootstrap = state;
   // 记录 rank0 的地址信息 hash 值
+  // 从第一个 handle 中获取 magic，同时设置到 comm 和 state
   comm->magic = state->magic = BOOTSTRAP_HANDLE(handles, 0)->magic; // state and comm magic set to the first magic ID
 
+  // 输出调试信息
   TRACE(NCCL_BOOTSTRAP, "rank %d nranks %d", rank, nranks);
+
+  // ============================================================
+  // 开始统计总耗时
+  // ============================================================
+  // BOOTSTRAP_PROF_OPEN：打开性能计时器，记录起始时间
+  // BOOTSTRAP_INIT_TIME_TOTAL：总耗时计时器索引
+  // ============================================================
 
   BOOTSTRAP_PROF_OPEN(timers[BOOTSTRAP_INIT_TIME_TOTAL]);
 
+  // ============================================================
+  // 填充发送给 Root 的信息
+  // ============================================================
+  // info 结构将发送给 Root，包含当前 rank 的地址信息
+  // ============================================================
+
   // fill up the info
   // 总共多少个节点进程，包含所有的
+  // 设置总 rank 数
   info.nranks = nranks;
   // 有多少个是 root 节点进程
+  // 设置 Root 节点数量
   info.nroots = nHandles;
+
+  // ============================================================
+  // 准备环形连接信息
+  // ============================================================
+  // nextPeer：存储下一个 rank 的连接信息
+  // memset：清零内存，确保干净的初始状态
+  // ============================================================
 
   // get the ring connection info
   memset(&nextPeer, 0, sizeof(union ringConnectInfo));
+  // 开始统计创建耗时
   BOOTSTRAP_PROF_OPEN(timers[BOOTSTRAP_INIT_TIME_CREATE]);
 
   // 是否让 bootstrap 也走 IB/RoCE 交换信息，默认关闭
@@ -1093,183 +1197,956 @@ ncclResult_t bootstrapInit(int nHandles, void* handles, struct ncclComm* comm) {
   // 等待 root rank 连接当前 rank，并从 root 节点中拿到 next ring rank 建连地址，存储到 nextPeer
   // 注意这里是从 listenSockRoot 中获取 ring next 的地址信息，并不会新建一个套接字
   BOOTSTRAP_PROF_OPEN(timers[BOOTSTRAP_INIT_TIME_RECV]);
+
+  // ============================================================
+  // 从 Root 获取下一个 rank 的连接信息
+  // ============================================================
+  //
+  // 这一步通过监听 Socket 接收 Root 返回的连接信息
+  //
+  // 工作流程：
+  // 1. 初始化临时 Socket（sock）
+  // 2. 等待 Root 连接到 listenSockRoot
+  // 3. 从 Root 接收下一个 rank 的连接信息
+  // 4. 关闭临时 Socket
+  // 5. 关闭监听 Socket（已完成使命）
+  //
+  // 为什么使用临时 Socket？
+  // - 只需要接收一次数据
+  // - 接收完成后立即关闭
+  // - 不需要保持连接
+  //
+  // ============================================================
+
+  // 初始化临时 Socket
   NCCLCHECK(ncclSocketInit(&sock));
+  // 等待 Root 连接
+  // Root 会主动连接到 listenSockRoot
   NCCLCHECK(ncclSocketAccept(&sock, &listenSockRoot));
+  // 从 Root 接收下一个 rank 的连接信息
+  // nextPeer：包含下一个 rank 的监听地址
   NCCLCHECK(socketRecv(&sock, &nextPeer, sizeof(nextPeer)));
+  // 关闭临时 Socket
   NCCLCHECK(ncclSocketClose(&sock));
   // 关闭 listenSockRoot 套接字, 释放资源
+  // Root 连接已完成，不再需要监听
   NCCLCHECK(ncclSocketClose(&listenSockRoot));
+  // 结束统计接收耗时
   BOOTSTRAP_PROF_CLOSE(timers[BOOTSTRAP_INIT_TIME_RECV]);
 
+  // ============================================================
+  // 建立环形连接
+  // ============================================================
+  //
+  // 这一步建立环形拓扑中的实际连接
+  //
   // 和 nextPeer 建立 ring 网络
   // accept and connect the ring network
+  //
+  // 连接方向：
+  // - 发送连接：当前 rank → next
+  // - 接收连接：prev → 当前 rank
+  //
+  // 两种模式：
+  //
+  // 1. Bootstrap Net 模式（使用网络插件）：
+  //    - 使用 IB/RoCE 等高速网络
+  //    - 支持 RDMA，性能更好
+  //
+  //    netRingConnect 参数：
+  //    - comm->netContext：网络上下文
+  //    - state->net：网络插件接口
+  //    - &state->listen：监听对象
+  //    - nextPeer.handle：下一个 rank 的监听句柄
+  //    - 返回：sendComm, sendDevHandle, recvComm, recvDevHandle
+  //
+  // 2. Socket 模式（使用 TCP Socket）：
+  //    - 使用传统的 TCP Socket
+  //    - 兼容性好，适用于各种网络环境
+  //
+  //    socketRingConnect 参数：
+  //    - &nextPeer.addr：下一个 rank 的 Socket 地址
+  //    - &STATE_RING(state, socket.send)：发送 Socket（连接到 next）
+  //    - &STATE_LISTEN(state, socket)：监听 Socket（等待 prev 连接）
+  //    - &STATE_RING(state, socket.recv)：接收 Socket（prev 的连接）
+  //    - comm->magic：魔数，用于验证连接
+  //    - state->abortFlag：中止标志
+  //
+  // 连接建立的对称性：
+  // - 当前 rank 连接到 next（作为发送方）
+  // - prev 连接到当前 rank（作为接收方）
+  // - 所有 rank 同时执行，形成完整的环形连接
+  //
+  // ============================================================
+
   if (ncclParamBootstrapNetEnable()) {
+    // ============================================================
+    // 使用网络插件模式建立环形连接
+    // ============================================================
     // 使用 IB 或者其他网络插件连接
+    // netRingConnect：建立环形网络连接
     NCCLCHECK(netRingConnect(comm->netContext, state->net, &state->listen, nextPeer.handle,
+                             // 输出参数：发送通信对象和设备句柄
                              &STATE_RING(state, net.sendComm), &STATE_RING(state, net.sendDevHandle),
+                             // 输出参数：接收通信对象和设备句柄
                              &STATE_RING(state, net.recvComm), &STATE_RING(state, net.recvDevHandle), state->abortFlag));
   } else {
+    // ============================================================
+    // 使用 Socket 模式建立环形连接
+    // ============================================================
     // 否则使用普通的 tcp 套接字连接到下一个 peer 中，目的地址记录在 socket.send 中
     // prev_peer 记录在 socket.recv 中
+    // socketRingConnect：建立环形 Socket 连接
     NCCLCHECK(socketRingConnect(&nextPeer.addr, &STATE_RING(state, socket.send), &STATE_LISTEN(state, socket), &STATE_RING(state, socket.recv), comm->magic, state->abortFlag));
   }
 
+  // ============================================================
+  // 收集所有 rank 的地址信息（AllGather）
+  // ============================================================
+  //
+  // 这一步为 AllGather 做准备，创建各种监听 Socket
+  //
   // AllGather all listen handlers
   // in case of failure, those resources will be free'd when calling bootstrapDestroy, so we can return immediatly
+  //
+  // 需要创建的 Socket：
+  // 1. Proxy Socket：用于 Proxy 服务通信
+  // 2. P2P Socket：用于点对点通信
+  // 3. Proxy UDS：Unix Domain Socket（本地通信优化）
+  //
+  // ============================================================
+
+  // ============================================================
+  // 创建 Proxy 监听 Socket
+  // ============================================================
+  //
+  // Proxy 是 NCCL 的异步执行引擎
+  // Proxy Socket 用于其他 ranks 连接到当前 rank 的 Proxy
+  //
   // 分配 nranks 个 peerProxyAddresses
+  // peerProxyAddresses[i]：rank i 的 Proxy 监听地址
   NCCLCHECK(ncclCalloc(&state->peerProxyAddresses, nranks));
+  // 分配 Proxy Socket 结构
   NCCLCHECK(ncclCalloc(&proxySocket, 1));
   // 创建一个 tcp proxySocket 监听套接字，记录本机监听地址到 peerProxyAddresses
+  // ncclSocketTypeProxy：标识这是 Proxy Socket
+  // state->peerProxyAddresses + rank：当前 rank 的 Proxy 地址位置
   NCCLCHECKGOTO(createListenSocket(comm, comm->magic, proxySocket, state->peerProxyAddresses + rank, ncclSocketTypeProxy), result, fail);
 
+  // ============================================================
+  // 创建 Proxy UDS（Unix Domain Socket）
+  // ============================================================
+  //
+  // UDS（Unix Domain Socket）用于本地进程间通信
+  // 比 TCP Socket 更高效，适用于同一节点内的 ranks
+  //
   // 生成一个 8 字节的随机 uds 值
   // Uds：Unix Domain Socket
+  //
+  // peerProxyAddressesUDS：
+  // - 存储所有 ranks 的 UDS 地址
+  // - 同一节点内的 ranks 使用 UDS 通信
+  // - 不同节点的 ranks 仍使用 TCP Socket
+  //
+  // ============================================================
+
+  // 分配 UDS 地址数组
   NCCLCHECKGOTO(ncclCalloc(&state->peerProxyAddressesUDS, nranks), result, fail);
+  // 生成当前 rank 的 UDS 地址
   NCCLCHECKGOTO(getUDS(state->peerProxyAddressesUDS + rank), result, fail);
+
+  // ============================================================
+  // 创建 P2P 监听 Socket
+  // ============================================================
+  //
+  // P2P Socket 用于点对点通信
+  // 允许任意两个 ranks 之间直接通信
+  //
+  // peerSocketAddress：
+  // - 当前 rank 的 P2P 监听地址
+  // - 需要通过 ringAllInfo 分发给所有其他 ranks
+  //
+  // ============================================================
 
   // create a socket for others to reach out (P2P)
   union ncclSocketAddress peerSocketAddress;
   // 创建一个 tcp peerSocketAddress 监听套接字，记录到 peerSocketAddress 中
   NCCLCHECKGOTO(createListenSocket(comm, comm->magic, &STATE_LISTEN(state, peerSocket), &peerSocketAddress, ncclSocketTypeBootstrap), result, fail);
   // 分配 nranks 个 peerP2pAddresses 地址
+  // peerP2pAddresses[i]：rank i 的 P2P 监听地址
   NCCLCHECKGOTO(ncclCalloc(&state->peerP2pAddresses, nranks), result, fail);
   // 记录本机监听地址到 peerP2pAddresses
+  // peerP2pAddresses + rank：当前 rank 的地址位置
   memcpy(state->peerP2pAddresses + rank, &peerSocketAddress, sizeof(union ncclSocketAddress));
 
+  // ============================================================
+  // 初始化 RAS（可靠性、可用性、可服务性）
+  // ============================================================
+  //
+  // RAS 是 NCCL 的可靠性增强功能
+  //
   // Initialize RAS
   // 可靠性、可用性和可服务性 (RAS) 子系统
   // RAS 子系统，可帮助用户诊断应用崩溃和挂起
   // 可在生产环境中用于在 NCCL 作业执行期间查询其运行状况
+  //
+  // ncclParamRasEnable()：
+  // - 环境变量：NCCL_RAS_ENABLE
+  // - 默认值：1（启用）
+  // - 可以设置为 0 禁用
+  //
+  // rasRankInit 结构包含：
+  // - addr：网络地址
+  // - pid：进程 ID
+  // - cudaDev：CUDA 设备编号
+  // - nvmlDev：NVML 设备编号
+  // - hostHash：主机哈希（用于识别节点）
+  // - pidHash：进程哈希（用于识别进程）
+  //
+  // ============================================================
+
   if (ncclParamRasEnable() == 1) {
+    // ============================================================
+    // 分配并填充 RAS 信息
+    // ============================================================
     // The RAS thread will take care of freeing the memory allocated below.
+    // 分配 Ranks 信息数组
     NCCLCHECK(ncclCalloc(&rasRanks, nranks));
+    // 拷贝网络地址
     memcpy(&rasRanks[rank].addr, &bootstrapNetIfAddr, sizeof(rasRanks[rank].addr));
+    // 获取进程 ID
     rasRanks[rank].pid = getpid();
+    // 设置 CUDA 设备编号
     rasRanks[rank].cudaDev = comm->cudaDev;
+    // 设置 NVML 设备编号
     rasRanks[rank].nvmlDev = comm->nvmlDev;
+    // 获取主机哈希（用于识别节点）
     rasRanks[rank].hostHash = getHostHash();
+    // 获取进程哈希（用于识别进程）
     rasRanks[rank].pidHash = getPidHash();
+
+    // ============================================================
+    // 初始化 RAS 子系统
+    // ============================================================
+    // ncclRasCommInit：初始化 RAS 子系统
+    // - 注册监控回调
+    // - 启动健康检查线程
+    //
+    // 如果初始化失败：
+    // - 打印警告信息，但继续执行
+    // - RAS 不是必需的，失败不会导致 Bootstrap 失败
+    // - performRasAddRanks 设为 false，跳过后续的 RAS 操作
+    // ============================================================
+
     if (ncclRasCommInit(comm, rasRanks+rank) != ncclSuccess) {
       INFO(NCCL_INIT|NCCL_RAS, "Continuing in spite of a RAS initialization error");
       // We should still participate in the ringAllInfo below as the peers will be waiting for us.
       // Just make sure that the address is clearly invalid...
+      // 清零当前 rank 的 RAS 信息（标记为无效）
       memset(rasRanks+rank, '\0', sizeof(*rasRanks));
+      // 设置标志，跳过后续的 RAS AddRanks 操作
       performRasAddRanks = false;
     }
   }
 
+  // ============================================================
+  // 执行环形 AllGather
+  // ============================================================
+  //
+  // 这一步通过环形连接收集所有 ranks 的地址信息
+  //
+  // ringAllInfo 的工作原理：
+  // 1. 每个 rank 准备自己的地址信息
+  // 2. 第一轮：rank 0 发送给 rank 1，rank 1 发送给 rank 2，...
+  // 3. 每个 rank 接收并保存上一个 rank 的地址
+  // 4. 第二轮：每个 rank 转发它收到的所有地址
+  // 5. 经过 nranks 轮后，每个 rank 都有完整的地址列表
+  //
+  // 收集的数据：
+  // - peerP2pAddresses：所有 ranks 的 P2P 地址
+  // - peerProxyAddresses：所有 ranks 的 Proxy 地址
+  // - peerProxyAddressesUDS：所有 ranks 的 UDS 地址
+  // - rasRanks：所有 ranks 的 RAS 信息（可选）
+  //
+  // 完成后：
+  // - 每个 rank 都可以与任意其他 rank 通信
+  // - 不再局限于环形拓扑
+  //
+  // ============================================================
+
+  // 开始统计环形 AllGather 耗时
   BOOTSTRAP_PROF_OPEN(timers[BOOTSTRAP_INIT_TIME_RING]);
 
   // 以 Ring 的方式实现 peerP2pAddresses 和 peerProxyAddresses 地址的 AllGather
   // 地址信息保存在 state 中
   // 这样，每个进程上就获得了所有进程的监听地址
   // 也就是说，每个进程都可以和其它任意进程通信
+  // ringAllInfo：通过环形连接收集所有 ranks 的地址信息
   NCCLCHECKGOTO(ringAllInfo(comm, state, state->peerP2pAddresses, state->peerProxyAddresses, state->peerProxyAddressesUDS, rasRanks), result, fail);
+  // 结束统计环形 AllGather 耗时
   BOOTSTRAP_PROF_CLOSE(timers[BOOTSTRAP_INIT_TIME_RING]);
+
+  // ============================================================
+  // 初始化 Proxy 服务
+  // ============================================================
+  //
+  // Proxy 是 NCCL 的异步执行引擎
+  //
+  // Proxy 的作用：
+  // 1. 异步执行网络操作
+  // 2. 管理网络连接
+  // 3. 处理内存注册和 DMA 操作
+  // 4. 提供异步 API 支持
+  //
+  // ncclProxyInit：
+  // - 创建 Proxy 线程
+  // - 初始化 Proxy 的通信端点
+  // - 注册回调函数
+  //
+  // proxySocket：
+  // - Proxy 的监听 Socket
+  // - 其他 ranks 可以通过这个 Socket 连接到 Proxy
+  //
+  // peerProxyAddresses：
+  // - 所有 ranks 的 Proxy 地址
+  // - Proxy 使用这些地址与其他 ranks 的 Proxy 通信
+  //
+  // peerProxyAddressesUDS：
+  // - 同一节点内的 ranks 使用 UDS 通信
+  // - 不同节点的 ranks 使用 TCP Socket
+  //
+  // ============================================================
 
   // Create the service proxy and get the UDS
   // 创建一个 unix 域套接字
+  // ncclProxyInit：初始化 Proxy 服务
   NCCLCHECKGOTO(ncclProxyInit(comm, proxySocket, state->peerProxyAddresses, state->peerProxyAddressesUDS), result, fail);
 
+  // ============================================================
+  // 完成 RAS 初始化
+  // ============================================================
+  //
+  // 如果 RAS 初始化成功，添加所有 ranks 到 RAS 系统
+  //
+  // ncclRasAddRanks：
+  // - 将所有 ranks 的信息注册到 RAS
+  // - RAS 开始监控所有 ranks
+  // - 检测异常和故障
+  //
+  // ============================================================
+
+  // 检查是否启用 RAS 且初始化成功
   if (ncclParamRasEnable() == 1 && performRasAddRanks) {
+    // 添加所有 ranks 到 RAS 系统
+    // 如果失败，打印警告但继续执行
     if (ncclRasAddRanks(rasRanks, nranks) != ncclSuccess)
       INFO(NCCL_INIT|NCCL_RAS, "Continuing in spite of a RAS initialization error");
   }
 
+  // ============================================================
+  // 结束计时并输出性能信息
+  // ============================================================
+  //
+  // 记录总耗时并输出各阶段的耗时
+  //
+  // 输出的耗时信息：
+  // - total：总耗时
+  // - create：创建 Socket 的耗时
+  // - send：向 Root 发送信息的耗时
+  // - recv：从 Root 接收信息的耗时
+  // - ring：环形 AllGather 的耗时
+  // - delay：错峰延迟的耗时
+  //
+  // 单位：秒（纳秒 / 1e9）
+  //
+  // 用途：
+  // - 性能分析
+  // - 瓶颈诊断
+  // - 优化初始化流程
+  //
+  // ============================================================
+
+  // 结束统计总耗时
   BOOTSTRAP_PROF_CLOSE(timers[BOOTSTRAP_INIT_TIME_TOTAL]);
+  // 输出完成信息
   TRACE(NCCL_BOOTSTRAP, "rank %d nranks %d - DONE", rank, nranks);
+  // 输出性能计时信息（单位：秒）
   INFO(NCCL_BOOTSTRAP | NCCL_PROFILE, "Bootstrap timings total %f (create %f, send %f, recv %f, ring %f, delay %f)", timers[BOOTSTRAP_INIT_TIME_TOTAL] / 1e9,
-       timers[BOOTSTRAP_INIT_TIME_CREATE] / 1e9,
-       timers[BOOTSTRAP_INIT_TIME_SEND] / 1e9,
-       timers[BOOTSTRAP_INIT_TIME_RECV] / 1e9,
-       timers[BOOTSTRAP_INIT_TIME_RING] / 1e9,
-       timers[BOOTSTRAP_INIT_TIME_DELAY] / 1e9);
+       timers[BOOTSTRAP_INIT_TIME_CREATE] / 1e9,   // 创建 Socket 耗时
+       timers[BOOTSTRAP_INIT_TIME_SEND] / 1e9,     // 向 Root 发送信息耗时
+       timers[BOOTSTRAP_INIT_TIME_RECV] / 1e9,     // 从 Root 接收信息耗时
+       timers[BOOTSTRAP_INIT_TIME_RING] / 1e9,     // 环形 AllGather 耗时
+       timers[BOOTSTRAP_INIT_TIME_DELAY] / 1e9);    // 错峰延迟耗时
+
+  // ============================================================
+  // 正常退出
+  // ============================================================
+  // 返回成功状态码
+  // ============================================================
 
 exit:
   return result;
+
+  // ============================================================
+  // 错误处理
+  // ============================================================
+  //
+  // 发生错误时：
+  // - 释放 proxySocket（如果已分配）
+  // - 跳转到 exit 标签返回错误码
+  //
+  // 注意：
+  // - state 不会在这里释放
+  // - comm->bootstrap 仍然指向 state
+  // - 如果后续需要清理，会在 comm 销毁时进行
+  //
+  // ============================================================
+
 fail:
+  // 释放 Proxy Socket（如果已分配）
   free(proxySocket);
+  // 跳转到 exit 标签
   goto exit;
 }
 
 // ============================================================================
 // bootstrapSplit - 处理通信器分割的 Bootstrap 初始化
 // ============================================================================
+//
+// 这个函数用于处理 ncclCommSplit 创建的子通信器的 Bootstrap 初始化
+//
+// 函数调用时机：
+// - ncclCommSplit：从父通信器分割出子通信器
+// - 子通信器需要建立自己的 Bootstrap 连接
+//
+// Bootstrap 是什么？
+// - NCCL 的引导阶段，负责建立基本的通信连接
+// - 在实际集体操作之前完成
+// - 建立环形的点对点连接
+//
+// 通信器分割（Comm Split）：
+// - 将一个通信域分割成多个子通信域
+// - 例如：按颜色（color）分割，相同 color 的 rank 属于同一个子 comm
+// - key 决定了子 comm 中的 rank 编号
+//
+// 主要功能：
+// 1. 创建 bootstrap 状态结构
+// 2. 计算子 comm 中的环形拓扑（前驱和后继）
+// 3. 建立环形连接（使用父 comm 的现有连接）
+// 4. 收集所有 peer 的地址信息
+// 5. 初始化 Proxy 服务（如果不共享资源）
+//
+// 参数说明：
+// - magic：魔数，用于验证连接的合法性
+// - comm：新创建的子通信器
+// - parent：父通信器
+// - color：分割颜色，相同 color 的 rank 属于同一个子 comm
+// - key：键值，决定在子 comm 中的 rank 编号
+// - parentRanks：父 comm rank 到子 comm rank 的映射数组
+//
+// parentRanks 数组说明：
+// - parentRanks[i] = j 表示父 comm 的 rank j 是子 comm 的 rank i
+// - 例如：父 comm 有 8 个 rank [0-7]
+//         子 comm A 包含父 comm 的 [0, 2, 4, 6]
+//         parentRanks = [0, 2, 4, 6]
+//         - 子 comm rank 0 是父 comm rank 0
+//         - 子 comm rank 1 是父 comm rank 2
+//         - 子 comm rank 2 是父 comm rank 4
+//         - 子 comm rank 3 是父 comm rank 6
+//
+// ============================================================================
 ncclResult_t bootstrapSplit(uint64_t magic, struct ncclComm* comm, struct ncclComm* parent, int color, int key, int* parentRanks) {
-  ncclResult_t ret = ncclSuccess;
-  int rank = comm->rank;
-  int nranks = comm->nRanks;
-  int prev, next;
-  union ringConnectInfo info;
-  union ringConnectInfo nextPeer;
-  struct ncclSocket* proxySocket = NULL;
-  struct bootstrapState* state;
+  ncclResult_t ret = ncclSuccess;                    // 返回值，默认成功
+  int rank = comm->rank;                              // 当前 rank 在子 comm 中的编号
+  int nranks = comm->nRanks;                          // 子 comm 中的总 rank 数
+  int prev, next;                                     // 环形拓扑中的前驱和后继 rank
+  union ringConnectInfo info;                         // 当前 rank 的连接信息（用于发送给其他 rank）
+  union ringConnectInfo nextPeer;                     // 下一个 rank 的连接信息（从下一个 rank 接收）
+  struct ncclSocket* proxySocket = NULL;              // Proxy 服务的 socket（如果不共享资源）
+  struct bootstrapState* state;                       // Bootstrap 状态结构
+
+  // ============================================================
+  // 创建并初始化 bootstrap 状态结构
+  // ============================================================
+  //
+  // bootstrapState 是 Bootstrap 阶段的核心数据结构
+  // 包含：
+  // - rank 信息
+  // - 网络连接状态
+  // - Peer 地址信息
+  // - Socket 句柄
+  //
+  // ncclCalloc：分配并清零内存
+  // - 分配大小：sizeof(struct bootstrapState)
+  // - 内容初始化为 0
+  //
+  // ============================================================
 
   NCCLCHECKGOTO(ncclCalloc(&state, 1), ret, fail);
-  state->rank = rank;
-  state->nranks = nranks;
-  state->cudaDev = comm->cudaDev;
-  state->abortFlag = comm->abortFlag;
-  state->net = comm->ncclNet;
-  comm->bootstrap = state;
-  comm->magic = state->magic = magic;
+  state->rank = rank;                                  // 当前 rank 号
+  state->nranks = nranks;                              // 总 rank 数
+  state->cudaDev = comm->cudaDev;                      // CUDA 设备编号
+  state->abortFlag = comm->abortFlag;                  // 中止标志（用于错误处理）
+  state->net = comm->ncclNet;                          // 网络插件接口
+  comm->bootstrap = state;                             // 将 state 保存到 comm 中
+  comm->magic = state->magic = magic;                  // 设置魔数（用于连接验证）
+
+  // ============================================================
+  // 计算在分割后通信器中的前一个和后一个 rank
+  // ============================================================
+  //
+  // Bootstrap 使用环形拓扑建立连接
+  // 每个 rank 连接到前驱（接收数据）和后继（发送数据）
+  //
+  // 计算公式：
+  // - prev = parentRanks[(rank - 1 + nranks) % nranks]
+  //   - 在子 comm 的 rank 序列中找到前一个 rank
+  //   - 然后通过 parentRanks 找到对应的父 comm rank
+  // - next = parentRanks[(rank + 1) % nranks]
+  //   - 在子 comm 的 rank 序列中找到后一个 rank
+  //   - 然后通过 parentRanks 找到对应的父 comm rank
+  //
+  // 示例：
+  //   父 comm：8 个 rank [0, 1, 2, 3, 4, 5, 6, 7]
+  //   子 comm A：包含父 comm 的 [0, 2, 4, 6]
+  //   parentRanks = [0, 2, 4, 6]
+  //
+  //   对于子 comm rank 0（父 comm rank 0）：
+  //     - 前一个：(0-1+4)%4 = 3 → parentRanks[3] = 6
+  //     - 后一个：(0+1)%4 = 1 → parentRanks[1] = 2
+  //     - prev = 6, next = 2
+  //
+  //   对于子 comm rank 1（父 comm rank 2）：
+  //     - 前一个：(1-1+4)%4 = 0 → parentRanks[0] = 0
+  //     - 后一个：(1+1)%4 = 2 → parentRanks[2] = 4
+  //     - prev = 0, next = 4
+  //
+  // 环形拓扑图：
+  //   0 ← 6 ← 4 ← 2 ← 0 (父 comm rank)
+  //   ↓           ↓
+  // 子 comm: 0    3
+  //           ↑    ↑
+  //           1    2
+  //
+  // 为什么要用父 comm rank？
+  // - 因为需要通过父 comm 的连接来交换信息
+  // - 父 comm 已经建立了完整的连接
+  //
+  // ============================================================
 
   // 计算在分割后通信器中的前一个和后一个 rank
-  prev = parentRanks[(rank - 1 + nranks) % nranks];
-  next = parentRanks[(rank + 1) % nranks];
+  prev = parentRanks[(rank - 1 + nranks) % nranks];    // 环形前驱（父 comm rank）
+  next = parentRanks[(rank + 1) % nranks];            // 环形后继（父 comm rank）
+
+  // ============================================================
+  // 创建监听句柄（用于其他 rank 连接到当前 rank）
+  // ============================================================
+  //
+  // 这一步创建一个监听端点，其他 rank 可以通过这个端点连接到当前 rank
+  //
+  // 两种模式：
+  //
+  // 1. Bootstrap Net 模式（ncclParamBootstrapNetEnable() == true）：
+  //    - 使用网络插件（NCCL Net）提供的监听接口
+  //    - 适用于支持 RDMA 的高速网络（如 InfiniBand）
+  //    - 优点：可以直接使用网络插件，性能更好
+  //
+  //    netGetDevice：获取网络设备
+  //    - 根据 rank 选择合适的网络设备
+  //    - 返回设备编号（net.dev）
+  //
+  //    state->net->listen：创建监听句柄
+  //    - 在指定设备上监听连接
+  //    - 返回监听句柄（net.handle）和通信对象（net.comm）
+  //
+  //    NCCL_NET_HANDLE_MAXSIZE：
+  //    - 网络句柄的最大大小
+  //    - 将监听句柄拷贝到 info 中，准备发送给其他 rank
+  //
+  // 2. Socket 模式（ncclParamBootstrapNetEnable() == false）：
+  //    - 使用传统的 Socket 连接
+  //    - 适用于 TCP/IP 网络
+  //    - 优点：兼容性好，适用于各种网络环境
+  //
+  //    createListenSocket：创建监听 Socket
+  //    - 绑定到一个端口
+  //    - 返回 Socket 对象和地址（socket.addr）
+  //
+  // ringConnectInfo 结构：
+  // - 包含连接信息（网络句柄或 Socket 地址）
+  // - 用于在 rank 之间交换连接信息
+  //
+  // STATE_LISTEN 宏：
+  // - 访问 state 中的监听相关字段
+  // - 根据编译时的配置选择网络或 Socket
+  //
+  // ============================================================
 
   // create a handle for the others to reach out to me
   if (ncclParamBootstrapNetEnable()) {
+    // ============================================================
+    // 使用网络插件模式（Bootstrap Net）
+    // ============================================================
+
     NCCLCHECKGOTO(netGetDevice(rank, comm, &STATE_LISTEN(state, net.dev)), ret, fail);
+    // 在指定设备上创建监听句柄
+    // net.handle：监听句柄，其他 rank 通过这个句柄连接
+    // net.comm：通信对象，用于后续的通信操作
     NCCLCHECKGOTO(state->net->listen(comm->netContext, STATE_LISTEN(state, net.dev), STATE_LISTEN(state, net.handle), &STATE_LISTEN(state, net.comm)), ret, fail);
+    // 将监听句柄拷贝到 info 中，准备发送给其他 rank
     memcpy(info.handle, STATE_LISTEN(state, net.handle), NCCL_NET_HANDLE_MAXSIZE);
   } else {
+    // ============================================================
+    // 使用 Socket 模式
+    // ============================================================
     // create socket for ring neightbor to contact mee
+    // 创建监听 Socket，其他 rank 可以通过这个 Socket 连接
+    // socket.addr：Socket 地址（IP + 端口）
     NCCLCHECK(createListenSocket(comm, comm->magic, &STATE_LISTEN(state, socket), &info.addr, ncclSocketTypeBootstrap));
   }
 
+  // ============================================================
+  // 创建 P2P 监听 Socket
+  // ============================================================
+  //
+  // 这个 Socket 用于点对点（P2P）通信
+  //
+  // 与环形 Socket 的区别：
+  // - 环形 Socket：仅用于环形拓扑中的前驱和后继
+  // - P2P Socket：用于任意两个 rank 之间的直接通信
+  //
+  // P2P Socket 的用途：
+  // - 直接的点对点操作（ncclSend、ncclRecv）
+  // - Bootstrap 阶段的信息交换
+  // - 不依赖环形拓扑的灵活通信
+  //
+  // peerSocketAddress：
+  // - 当前 rank 的 P2P Socket 地址
+  // - 需要分发给所有其他 rank
+  //
+  // ============================================================
+
   // create a socket for others to reach out (P2P)
-  union ncclSocketAddress peerSocketAddress;
+  union ncclSocketAddress peerSocketAddress;           // 当前 rank 的 P2P 地址
+  // 创建 P2P 监听 Socket
   NCCLCHECK(createListenSocket(comm, comm->magic, &STATE_LISTEN(state, peerSocket), &peerSocketAddress, ncclSocketTypeBootstrap));
 
+  // ============================================================
+  // RAS（可靠性、可用性、可服务性）初始化
+  // ============================================================
+  //
+  // RAS 是 NCCL 的可靠性增强功能
+  //
+  // RAS 提供的功能：
+  // - 错误检测和报告
+  // - 故障恢复
+  // - 健康监控
+  //
+  // ncclParamRasEnable()：
+  // - 环境变量：NCCL_RAS_ENABLE
+  // - 默认为 0（禁用）
+  // - 设置为 1 启用 RAS 功能
+  //
+  // ncclRasCommInit：
+  // - 初始化 RAS 子系统
+  // - 注册监控回调
+  // - 启动健康检查
+  //
+  // 如果初始化失败：
+  // - 打印警告信息，但继续执行
+  // - RAS 不是必需的，失败不会导致 Bootstrap 失败
+  //
+  // ============================================================
+
   if (ncclParamRasEnable() == 1) {
+    // 初始化 RAS 子系统
     if (ncclRasCommInit(comm, nullptr) != ncclSuccess)
       INFO(NCCL_INIT|NCCL_RAS, "Continuing in spite of a RAS initialization error");
   }
 
+  // ============================================================
+  // 通过父通信器的连接交换环形连接信息
+  // ============================================================
+  //
+  // 这一步是关键：使用父 comm 的现有连接来交换子 comm 的连接信息
+  //
+  // 为什么要使用父 comm 的连接？
+  // 1. 父 comm 已经建立了完整的通信连接
+  // 2. 子 comm 还没有建立自己的连接
+  // 3. 复用父 comm 的连接可以快速完成信息交换
+  //
+  // 交换的信息：
+  // - 当前 rank 的监听地址（info）
+  // - 下一个 rank 的监听地址（nextPeer）
+  //
+  // 信息交换流程：
+  // 1. 当前 rank → prev：发送自己的连接信息（info）
+  //    - 通过 bootstrapSend 发送到父 comm 的 prev rank
+  //    - prev 在父 comm 的环形拓扑中是当前 rank 的前驱
+  //    - 但在子 comm 中，prev 对应的是环形前驱的父 comm rank
+  //
+  // 2. next → 当前 rank：接收下一个 rank 的连接信息（nextPeer）
+  //    - 通过 bootstrapRecv 从父 comm 的 next rank 接收
+  //    - next 在父 comm 的环形拓扑中是当前 rank 的后继
+  //    - 但在子 comm 中，next 对应的是环形后继的父 comm rank
+  //
+  // BOOTSTRAP_TAG_COMMSPLIT：
+  // - 通信标签，标识这是 CommSplit 操作
+  // - 用于区分不同的 Bootstrap 消息类型
+  //
+  // 示例（继续之前的例子）：
+  //   子 comm A：包含父 comm 的 [0, 2, 4, 6]
+  //   parentRanks = [0, 2, 4, 6]
+  //
+  //   对于子 comm rank 0（父 comm rank 0）：
+  //     - prev = 6（父 comm rank）
+  //     - next = 2（父 comm rank）
+  //     - 发送 info 到父 comm rank 6
+  //     - 从父 comm rank 2 接收 nextPeer
+  //
+  //   注意：prev 和 next 是父 comm 的 rank 编号
+  //        因为要通过父 comm 的连接进行通信
+  //
+  // ============================================================
+
   // Get addr from next rank using the parent's connections
   // 通过父通信器的连接获取下一个 rank 的地址
+
+  // 向父 comm 的 prev rank 发送当前 rank 的连接信息
+  // prev：在子 comm 环形拓扑中，当前 rank 的前驱在父 comm 中的 rank 号
   NCCLCHECKGOTO(bootstrapSend(parent->bootstrap, prev, BOOTSTRAP_TAG_COMMSPLIT, &info, sizeof(union ringConnectInfo)), ret, fail);
+  // 从父 comm 的 next rank 接收下一个 rank 的连接信息
+  // next：在子 comm 环形拓扑中，当前 rank 的后继在父 comm 中的 rank 号
+  // nextPeer：下一个 rank 的连接信息（监听地址）
   NCCLCHECKGOTO(bootstrapRecv(parent->bootstrap, next, BOOTSTRAP_TAG_COMMSPLIT, &nextPeer, sizeof(union ringConnectInfo)), ret, fail);
 
+  // ============================================================
+  // 建立环形连接
+  // ============================================================
+  //
+  // 交换完连接信息后，建立实际的环形连接
+  //
+  // 连接方向：
+  // - 发送连接：当前 rank → next
+  // - 接收连接：prev → 当前 rank
+  //
+  // 两种模式（与监听时的模式一致）：
+  //
+  // 1. Bootstrap Net 模式：
+  //    netRingConnect：建立环形网络连接
+  //    - 使用网络插件提供的连接接口
+  //    - nextPeer.handle：下一个 rank 的监听句柄
+  //    - 返回：
+  //      - sendComm：发送通信对象（当前 rank → next）
+  //      - sendDevHandle：发送设备句柄
+  //      - recvComm：接收通信对象（prev → 当前 rank）
+  //      - recvDevHandle：接收设备句柄
+  //
+  // 2. Socket 模式：
+  //    socketRingConnect：建立环形 Socket 连接
+  //    - 使用传统的 Socket 连接
+  //    - nextPeer.addr：下一个 rank 的 Socket 地址
+  //    - 返回：
+  //      - send：发送 Socket（当前 rank → next）
+  //      - recv：接收 Socket（prev → 当前 rank）
+  //
+  // 连接建立的对称性：
+  // - 当前 rank 连接到 next（作为发送方）
+  // - prev 连接到当前 rank（作为接收方）
+  // - 所有 rank 同时执行，形成完整的环形连接
+  //
+  // STATE_RING 宏：
+  // - 访问 state 中的环形连接相关字段
+  // - 根据编译时的配置选择网络或 Socket
+  //
+  // ============================================================
+
   if (ncclParamBootstrapNetEnable()) {
+    // ============================================================
+    // 使用网络插件模式建立环形连接
+    // ============================================================
+
     NCCLCHECKGOTO(netRingConnect(comm->netContext, state->net, &state->listen, nextPeer.handle,
                                  &STATE_RING(state, net.sendComm), &STATE_RING(state, net.sendDevHandle),
                                  &STATE_RING(state, net.recvComm), &STATE_RING(state, net.recvDevHandle), state->abortFlag),
                   ret, fail);
   } else {
+    // ============================================================
+    // 使用 Socket 模式建立环形连接
+    // ============================================================
+
     NCCLCHECK(socketRingConnect(&nextPeer.addr, &STATE_RING(state, socket.send), &STATE_LISTEN(state, socket), &STATE_RING(state, socket.recv), comm->magic, state->abortFlag));
   }
 
+  // ============================================================
+  // 分配并初始化 P2P 地址数组
+  // ============================================================
+  //
+  // peerP2pAddresses 数组：
+  // - 存储所有 rank 的 P2P Socket 地址
+  // - 大小：nranks 个元素
+  // - peerP2pAddresses[i]：rank i 的 P2P 地址
+  //
+  // 当前步骤：
+  // 1. 分配 peerP2pAddresses 数组（nranks 个元素）
+  // 2. 将当前 rank 的 P2P 地址（peerSocketAddress）填入数组
+  //    - peerP2pAddresses[rank] = peerSocketAddress
+  //    - 其他 rank 的地址稍后通过 ringAllInfo 收集
+  //
+  // P2P 地址的用途：
+  // - 任意两个 rank 之间的直接通信
+  // - ncclSend/ncclRecv 操作
+  // - Bootstrap 阶段的信息交换
+  //
+  // ============================================================
+
   NCCLCHECKGOTO(ncclCalloc(&state->peerP2pAddresses, nranks), ret, fail);
+  // 将当前 rank 的 P2P 地址填入数组的对应位置
   memcpy(state->peerP2pAddresses + rank, &peerSocketAddress, sizeof(union ncclSocketAddress));
 
+  // ============================================================
+  // 根据是否共享资源选择不同的初始化路径
+  // ============================================================
+  //
+  // shareResources 标志：
+  // - true：子 comm 与父 comm 共享某些资源（如 Proxy 线程）
+  // - false：子 comm 独立创建所有资源
+  //
+  // 共享资源的优势：
+  // - 减少 Proxy 线程数量（多个 comm 共享一个 Proxy）
+  // - 减少资源开销
+  // - 提高 CPU 和内存利用率
+  //
+  // 两种路径：
+  //
+  // 1. 共享资源（parent->shareResources == true）：
+  //    - 不创建新的 Proxy 线程
+  //    - 复用父 comm 的 Proxy
+  //    - 更新 topParentRanks 映射
+  //    - 只收集 P2P 地址
+  //
+  // 2. 不共享资源（parent->shareResources == false）：
+  //    - 创建新的 Proxy 线程
+  //    - 分配 Proxy 地址数组
+  //    - 收集 P2P 和 Proxy 地址
+  //    - 初始化 Proxy 服务
+  //
+  // ============================================================
+
   if (parent->shareResources) {
+    // ============================================================
+    // 共享资源模式
+    // ============================================================
+    //
+    // 在这种模式下，子 comm 复用父 comm 的资源
+    //
+
     /* map local rank to top parent local rank. */
+    // 更新 topParentRanks 映射
+    // topParentRanks[i]：子 comm rank i 在最顶层父 comm 中的 rank 号
+    //
+    // 计算方式：
+    // - parentRanks[i]：子 comm rank i 在父 comm 中的 rank 号
+    // - parent->topParentRanks[parentRanks[i]]：父 comm rank 在顶层 comm 中的 rank 号
+    //
+    // 示例（嵌套分割）：
+    //   顶层 comm：8 个 ranks [0, 1, 2, 3, 4, 5, 6, 7]
+    //   第一次分割：子 comm A 包含 [0, 2, 4, 6]
+    //   第二次分割：从 A 分割出子 comm B 包含 [0, 4]
+    //
+    //   对于子 comm B 的 rank 0（父 comm A 的 rank 0，顶层 comm 的 rank 0）：
+    //     - parentRanks[0] = 0（在父 comm A 中的 rank）
+    //     - parent->topParentRanks[0] = 0（在顶层 comm 中的 rank）
+    //     - topParentRanks[0] = 0
+    //
+    //   对于子 comm B 的 rank 1（父 comm A 的 rank 2，顶层 comm 的 rank 4）：
+    //     - parentRanks[1] = 2（在父 comm A 中的 rank）
+    //     - parent->topParentRanks[2] = 4（在顶层 comm 中的 rank）
+    //     - topParentRanks[1] = 4
+    //
     for (int i = 0; i < nranks; ++i) {
       comm->topParentRanks[i] = parent->topParentRanks[parentRanks[i]];
     }
+    // 收集所有 rank 的 P2P 地址
+    // 只需要 P2P 地址，不需要 Proxy 地址（复用父 comm 的）
     NCCLCHECKGOTO(ringAllInfo(comm, state, state->peerP2pAddresses, NULL, NULL, NULL), ret, fail);
   } else {
+    // ============================================================
+    // 不共享资源模式
+    // ============================================================
+    //
+    // 在这种模式下，子 comm 需要创建自己的资源
+    //
+    // 需要创建的资源：
+    // 1. Proxy 地址数组（peerProxyAddresses）
+    // 2. Proxy UDS 地址数组（peerProxyAddressesUDS）
+    // 3. Proxy Socket（proxySocket）
+    // 4. Proxy 服务线程
+    //
+    // Proxy 地址：
+    // - Proxy 服务的监听地址
+    // - 其他 rank 通过这个地址访问 Proxy
+    //
+    // Proxy UDS 地址：
+    // - Unix Domain Socket 地址
+    // - 用于本地进程间通信（同一节点内的 rank）
+    // - UDS 比 TCP Socket 更高效
+    //
+    // Proxy Socket：
+    // - Proxy 服务的监听 Socket
+    // - 其他 rank 可以通过这个 Socket 连接到 Proxy
+    //
+    // ringAllInfo：
+    // - 通过环形连接收集所有 rank 的地址信息
+    // - 收集 P2P 地址、Proxy 地址、Proxy UDS 地址
+    // - 每个 rank 将自己的地址发送给环形中的下一个 rank
+    // - 最终所有 rank 都有完整的地址列表
+    //
+    // ncclProxyInit：
+    // - 初始化 Proxy 服务
+    // - 启动 Proxy 线程
+    // - Proxy 线程处理网络操作、内存管理等异步任务
+    //
+    // ============================================================
+
+    // 分配 Proxy 地址数组
     NCCLCHECKGOTO(ncclCalloc(&state->peerProxyAddresses, nranks), ret, fail);
     NCCLCHECKGOTO(ncclCalloc(&state->peerProxyAddressesUDS, nranks), ret, fail);
     // Create the service proxy and get the UDS
+    // 分配 Proxy Socket 结构
     NCCLCHECKGOTO(ncclCalloc(&proxySocket, 1), ret, fail);
+    // 获取当前 rank 的 UDS 地址
     NCCLCHECKGOTO(getUDS(state->peerProxyAddressesUDS + rank), ret, fail);
+    // 创建 Proxy 监听 Socket
+    // 其他 rank 通过这个 Socket 连接到当前 rank 的 Proxy
     NCCLCHECKGOTO(createListenSocket(comm, comm->magic, proxySocket, state->peerProxyAddresses + rank, ncclSocketTypeProxy), ret, fail);
+    // 收集所有 rank 的地址信息
+    // 通过环形连接交换 P2P 地址、Proxy 地址、Proxy UDS 地址
     NCCLCHECKGOTO(ringAllInfo(comm, state, state->peerP2pAddresses, state->peerProxyAddresses, state->peerProxyAddressesUDS, NULL), ret, fail);
+    // 初始化 Proxy 服务
+    // 启动 Proxy 线程，传入 Proxy Socket 和地址列表
     NCCLCHECKGOTO(ncclProxyInit(comm, proxySocket, state->peerProxyAddresses, state->peerProxyAddressesUDS), ret, fail);
   }
+
+  // ============================================================
+  // 调试信息输出
+  // ============================================================
+  //
+  // TRACE：调试级别的日志输出
+  // - 包含 comm 的关键信息
+  // - 用于调试 Bootstrap Split 流程
+  //
+  // 输出信息：
+  // - comm：子 comm 指针
+  // - parent：父 comm 指针
+  // - rank：子 comm 中的 rank 号
+  // - nranks：子 comm 中的总 rank 数
+  // - color：分割颜色
+  // - key：键值
+  // - prev：环形前驱（父 comm rank）
+  // - next：环形后继（父 comm rank）
+  //
+  // ============================================================
 
   TRACE(NCCL_BOOTSTRAP, "bootstrapSplit: comm %p parent %p rank %d nranks %d color %d key %d prev %d next %d - DONE", comm, parent, rank, nranks,
         color, key, prev, next);
@@ -1277,6 +2154,21 @@ ncclResult_t bootstrapSplit(uint64_t magic, struct ncclComm* comm, struct ncclCo
 exit:
   return ret;
 fail:
+  // ============================================================
+  // 错误处理
+  // ============================================================
+  //
+  // 发生错误时：
+  // - 释放 proxySocket（如果已分配）
+  // - 跳转到 exit 标签返回错误码
+  //
+  // 注意：
+  // - state 不会在这里释放
+  // - comm->bootstrap 仍然指向 state
+  // - 如果后续需要清理，会在 comm 销毁时进行
+  //
+  // ============================================================
+
   free(proxySocket);
   goto exit;
 }
