@@ -77,7 +77,8 @@ static void listRemove(Obj* list, int* count, int index);
 ncclResult_t ncclDevrInitOnce(struct ncclComm* comm) {
   ncclResult_t ret = ncclSuccess;                      // 初始化返回值为成功
   struct ncclDevrState* devr = &comm->devrState;       // 获取设备端运行时状态指针
-  if (devr->bigSize != 0) return ncclSuccess;          // 如果已经初始化过，直接返回（幂等操作）
+  if (devr->bigSize != 0) 
+    return ncclSuccess;          // 如果已经初始化过，直接返回（幂等操作）
 
   // 检查本地 rank 是否连续（用于确定 LSA 团队）
   // LSA（Local Symmetric Area）是对称内存的本地访问区域
@@ -87,6 +88,7 @@ ncclResult_t ncclDevrInitOnce(struct ncclComm* comm) {
     // 如果所有 local rank 的 world rank 连续，则可以形成对称视图
     lsaIsLocal &= comm->localRankToRank[i] == comm->localRankToRank[0] + i;
   }
+  
   // 设置 LSA 团队的本地 rank 索引
   devr->lsaSelf = lsaIsLocal ? comm->localRank : 0;   // 如果连续则使用本地 rank，否则使用 0
   // 设置 LSA 团队的大小

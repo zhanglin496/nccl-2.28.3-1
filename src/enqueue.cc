@@ -227,7 +227,8 @@ static void addWorkBatchToPlan(
   // 如果偏移量不是工作大小的整数倍，需要扩展批次
   extendBatch |= 0 != offset%workSize;
   if (newBatch || extendBatch) {                         // 如果需要新批次或扩展批次
-    if (!newBatch) batch->nextExtends = extendBatch;     // 如果是扩展批次，设置标志
+    if (!newBatch) 
+        batch->nextExtends = extendBatch;     // 如果是扩展批次，设置标志
     // 从内存栈中分配批次节点（作用域内存，计划完成后自动释放）
     struct ncclWorkBatchList* batchNode = ncclMemoryStackAlloc<ncclWorkBatchList>(&comm->memScoped);
     // Coverity 认为 ncclIntruQueueEnqueue 会访问 chan->workBatchQueue->tail，可能为 NULL
@@ -718,7 +719,8 @@ static ncclResult_t scheduleCollTasksToPlan(
     while (task != nullptr) {                            // 遍历所有任务
       int nBatches = divUp(nPlanColls, 4);               // 粗略估计：每批次 4 个集合操作
       // 检查预算是否足够
-      if (!testBudget(budget, nBatches, workBytes + workNode->size)) goto plan_full;
+      if (!testBudget(budget, nBatches, workBytes + workNode->size)) 
+        goto plan_full;
 
       nPlanColls += 1;                                   // 增加计划任务计数
       workBytes += workNode->size;                       // 累加工作数据大小
@@ -1090,7 +1092,8 @@ static ncclResult_t addP2pToPlan(
 
   for (int dir=0; dir < 2; dir++) {                      // 0=recv, 1=send（遍历接收和发送方向）
     // 如果字节数不是 -1（有效操作）且超过阈值，则不使用 LL 协议
-    if (bytes[dir] != -1) protoLL[dir] &= bytes[dir] <= thresholdLL;
+    if (bytes[dir] != -1) 
+        protoLL[dir] &= bytes[dir] <= thresholdLL;
     // 根据标志选择协议（LL 或 SIMPLE）
     protocol[dir] = protoLL[dir] ? NCCL_PROTO_LL : NCCL_PROTO_SIMPLE;
 
@@ -1165,8 +1168,10 @@ static ncclResult_t addP2pToPlan(
     }
 
     // 计算使用的通道数
-    if (bytes[dir] == -1) nChannels[dir] = 0;            // 空操作，不使用通道
-    else if (bytes[dir] == 0) nChannels[dir] = 1;         // 零字节操作，使用 1 个通道
+    if (bytes[dir] == -1) 
+        nChannels[dir] = 0;            // 空操作，不使用通道
+    else if (bytes[dir] == 0) 
+        nChannels[dir] = 1;         // 零字节操作，使用 1 个通道
     else {
       // 计算最小和最大分区大小（根据是否为多节点）
       ssize_t minPartSize = comm->nNodes > 1 ? stepSize[dir]/2 : stepSize[dir]/8;
@@ -1182,7 +1187,8 @@ static ncclResult_t addP2pToPlan(
       }
     }
     // 更新传播到性能分析器的通道数
-    if (p2pTasks[dir]) p2pTasks[dir]->nChannels = nChannels[dir];
+    if (p2pTasks[dir])
+        p2pTasks[dir]->nChannels = nChannels[dir];
   }
 
   // 创建 P2P 工作节点
@@ -1379,7 +1385,8 @@ static ncclResult_t scheduleP2pTasksToPlan(
   int nChannelsMin = nChannelsMax;                       // 初始最小通道数等于最大通道数
   // 尝试使用所有通道，但每个操作使用一个通道
   // 如果最小通道数 × rank 数超过总 P2P 通道数，则减少最小通道数
-  while (nChannelsMin*nRanks > comm->p2pnChannels && nChannelsMin > 1) nChannelsMin /= 2;
+  while (nChannelsMin*nRanks > comm->p2pnChannels && nChannelsMin > 1) 
+    nChannelsMin /= 2;
 
   // Save the total count of send/recv tasks in the plan
   // 保存计划中发送/接收任务的总数
@@ -1536,6 +1543,7 @@ static ncclResult_t uploadWork(struct ncclComm* comm, struct ncclKernelPlan* pla
   default:
     return ncclInternalError;                           // 未知存储类型，返回内部错误
   }
+  
   plan->kernelArgs->workMask = fifoMask;                // 设置 FIFO 掩码到内核参数
 
   // Batches were placed after kernelArgs by finishPlan(). Only thing left to
@@ -1555,10 +1563,12 @@ static ncclResult_t uploadWork(struct ncclComm* comm, struct ncclKernelPlan* pla
 
   // Write the channel-shared work structs.
   // 写入通道共享的工作结构
+  //这里把ncclDevWorkColl host传入到kernel的参数写入到dst
   struct ncclWorkList* workNode = ncclIntruQueueHead(&plan->workQueue); // 获取工作队列头
   while (workNode != nullptr) {                          // 遍历所有工作节点
     char* dst = (char*)fifoBufHost;                      // 目标地址（FIFO 或参数缓冲区）
     char* src = (char*)(workNode+1);                     // 源地址（工作数据）
+    //workNode->size通过函数ncclDevWorkSize计算
     for (int n = workNode->size; n != 0; n -= 16) {     // 每次复制 16 字节
       memcpy(
         __builtin_assume_aligned(dst + (fifoCursor & fifoMask), 16), // 目标地址 16 字节对齐
@@ -1626,16 +1636,20 @@ static ncclResult_t uploadWork(struct ncclComm* comm, struct ncclKernelPlan* pla
 
     finish_scope:
       // 恢复 CUDA 流捕获模式（如果之前修改过）
-      if (mode != cudaStreamCaptureModeRelaxed) (void)cudaThreadExchangeStreamCaptureMode(&mode);
+      if (mode != cudaStreamCaptureModeRelaxed) 
+        (void)cudaThreadExchangeStreamCaptureMode(&mode);
       return result;
     fail:
       // 失败时，如果没有设置清理回调，直接释放主机端缓冲区
       if (!cleanup) free(fifoBufHost);
       // 跳转到清理作用域
       goto finish_scope;
-    } break;
-  default: break;
+    } 
+    break;
+  default:
+    break;
   }
+  
   return ncclSuccess;
 }
 
@@ -3379,6 +3393,7 @@ static ncclResult_t p2pTaskAppend(
     size_t count,
     ncclDataType_t datatype,
     int peer) {
+    
   struct ncclKernelPlanner *planner = &comm->planner;  // 获取内核规划器指针，用于管理任务队列
 
   // Determine peer and basic parameters.
@@ -3421,7 +3436,7 @@ static ncclResult_t p2pTaskAppend(
   p2p->groupApiEventHandle = ncclProfilerApiState.groupApiEventHandle; // 记录组 API 事件句柄
   p2p->p2pApiEventHandle = ncclProfilerApiState.p2pApiEventHandle;     // 记录 P2P API 事件句柄
 
-  // 将 P2P 任务加入对应 peer 的发送或接收队列
+  // 将 P2P 任务加入对应 peer 的发送或接收队列的尾部
   // 使用无锁 intrusive 队列实现高效的任务入队
   ncclIntruQueueEnqueue(
     isSendNotRecv ? &planner->peers[peer].sendQueue : &planner->peers[peer].recvQueue, // 根据操作类型选择队列
@@ -3745,6 +3760,7 @@ static ncclResult_t taskAppend(struct ncclComm* comm, struct ncclInfo* info) {
       ncclDevrFindWindow(comm, info->recvbuff, &recvWin); // 查找接收缓冲区对应的对称窗口
 
       // 检查 CE 引擎是否实现了此操作
+      //CE只支持指定类型的集合操作
       bool ceImplemented = ncclCeImplemented(info->coll, info->op, info->datatype); // 查询 CE 实现状态
 
       // Append CE collective task if CE is supported and requested by user

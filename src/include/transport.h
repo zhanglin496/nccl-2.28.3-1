@@ -67,10 +67,10 @@ struct ncclPeerInfo {
 
   //主机hash值，检查是否在同一个主机上
   uint64_t hostHash;
-  //检查是否是同一个进程
+  //pidhash值，检查是否是同一个进程
   uint64_t pidHash;
 
-//共享内存设备号
+  //共享内存设备号
   dev_t shmDev;
   //gpu的busid号
   int64_t busId;

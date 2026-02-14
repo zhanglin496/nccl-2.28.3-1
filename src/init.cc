@@ -221,7 +221,6 @@ ncclResult_t ncclGetUniqueId(ncclUniqueId* out) {
 #else
 #define NCCL_NO_OPTIMIZE __attribute__((optimize("O0")))
 #endif
-
 // "毒化" comm 结构体，在释放前将关键字段设为无效值
 // 这有助于检测 use-after-free 等内存错误
 void NCCL_NO_OPTIMIZE commPoison(ncclComm_t comm) {
@@ -2665,7 +2664,7 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
   // 如果满足以下任一条件，启用 MNNVL 检查：
   // 1. 多节点环境 + MNNVL_ENABLE 非默认值 + P2P level > 0
   // 2. MNNVL_ENABLE 强制启用（值为 1）
-  if ((nNodes > 1 && ncclParamMNNVLEnable() != 0 && p2pLevel != 0) || ncclParamMNNVLEnable() == 1) {
+  if ((nNodes > 1 && ncclParamMNNVLEnable() != 0 && p2pLevel != 0)  || ncclParamMNNVLEnable() == 1) {
     NCCLCHECKGOTO(ncclMnnvlCheck(comm), ret, fail);
   }
 
@@ -2828,7 +2827,7 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
     //   ┌──────────────────┐  ┌──────────────────┐
     //   │  进程 1 (PID 10)  │  │  进程 2 (PID 20)  │
     //   │  ┌───┐ ┌───┐     │  │  ┌───┐ ┌───┐     │
-    //   │  │ 0 │ │ 2 │(GPU)│  │  │ 1 │ │ 3 │(GPU)│
+    //   │  │ 0  │ │ 2 │(GPU)│  │  │ 1 │ │ 3 │(GPU)│
     //   │  └───┘ └───┘     │  │  └───┘ └───┘     │
     //   │   rank0  rank2   │  │   rank1  rank3   │
     //   └──────────────────┘  └──────────────────┘
@@ -3260,7 +3259,8 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
   // - 每个 rank 只与两个邻居通信（前驱和后继）
   // - 适合大消息传输（高带宽利用率）
   // - 实现：rank (i-1) → rank i → rank (i+1)
-  //
+
+  //通信重叠指的是：每个节点在每一步都同时发送和接收，所有节点和所有链路都在并行工作，
   // 为什么 Ring 适合大消息？
   // - 通信可以重叠（流水线）
   // - 带宽利用率高（所有链路同时工作）
@@ -3774,6 +3774,7 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
   // ============================================================
 
   // 设置 channels（取最小值以确保所有 rank 一致）
+  //由于ringGraph
   comm->nChannels = std::min(treeGraph->nChannels, ringGraph->nChannels);
 
   // ============================================================
@@ -4161,6 +4162,7 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
   if (graphs[NCCL_ALGO_NVLS]->nChannels == 0)
     comm->nvlsSupport = comm->nvlsChannels = 0;
 
+  //ringGraph最大channels是32，所以这里最大也是32
   // 再一次更新 channels
   comm->nChannels = treeGraph->nChannels = ringGraph->nChannels = std::min(treeGraph->nChannels, ringGraph->nChannels);
   if (comm->nChannels < nChannelsOrig) {

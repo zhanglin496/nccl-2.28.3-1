@@ -137,6 +137,8 @@ struct ncclDevrState {
     // 用途：定义 LSA 团队使用的整个虚拟地址空间范围
     size_t bigSize; // size of our big logical space (128GB?)
 
+    struct ncclSpace bigSpace; // allocates our big VA space.
+
     // LSA 平面基地址（所有 LSA rank 的大虚拟地址空间连接后的基地址）
     // 用途：所有 LSA rank 的虚拟地址从这个基地址开始分配
     //       例如：rank 0 从 base + 0*bigSize 开始，rank 1 从 base + 1*bigSize 开始

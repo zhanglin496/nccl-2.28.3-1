@@ -19,7 +19,8 @@ ncclResult_t ncclMnnvlCheck(struct ncclComm* comm) {
   // ========== 第一步: 检查 cuMem 功能是否启用 ==========
   // MNNVL 依赖于 CUDA 的 cuMem API (CUDA Unified Memory Management)
   // 如果 cuMem 未启用，则无法使用 MNNVL，直接返回成功（MNNVL 不会被使用）
-  if (!ncclCuMemEnable()) return ncclSuccess;
+  if (!ncclCuMemEnable()) 
+    return ncclSuccess;
 
   // ========== 第二步: 检查设备是否支持 FABRIC 句柄类型 ==========
   // FABRIC 句柄是 CUDA 用于跨节点内存共享的机制
@@ -40,7 +41,8 @@ ncclResult_t ncclMnnvlCheck(struct ncclComm* comm) {
   (void) CUPFN(cuDeviceGetAttribute(&flag, CU_DEVICE_ATTRIBUTE_HANDLE_TYPE_FABRIC_SUPPORTED, currentDev));
 
   // 如果设备不支持 FABRIC 句柄，MNNVL 无法使用，直接返回成功
-  if (!flag) return ncclSuccess;
+  if (!flag) 
+    return ncclSuccess;
 
   // ========== 第三步: 检查所有 rank 的 Fabric 状态是否已完成 ==========
   // MNNVL 要求所有通信的 GPU 都已完成 Fabric 初始化
@@ -52,7 +54,8 @@ ncclResult_t ncclMnnvlCheck(struct ncclComm* comm) {
   for (int i = 0; i < comm->nRanks; i++) {
     // peerInfo[i] 包含第 i 个 rank 的 GPU 信息
     // fabricInfo.state 存储 Fabric 初始化状态
-    if (comm->peerInfo[i].fabricInfo.state != NVML_GPU_FABRIC_STATE_COMPLETED) return ncclSuccess;
+    if (comm->peerInfo[i].fabricInfo.state != NVML_GPU_FABRIC_STATE_COMPLETED) 
+        return ncclSuccess;
   }
 
   // ========== 第四步: 确定 MNNVL 域(clique/派系) ==========
@@ -87,7 +90,8 @@ ncclResult_t ncclMnnvlCheck(struct ncclComm* comm) {
     memcpy(&uuid1, fabricInfo2->clusterUuid + sizeof(uuid0), sizeof(uuid1));
 
     // 如果 UUID 全为 0，说明没有 MNNVL fabric 信息，禁用 MNNVL
-    if ((uuid0 | uuid1) == 0) return ncclSuccess;
+    if ((uuid0 | uuid1) == 0) 
+        return ncclSuccess;
 
     // 比较两个 GPU 的 cluster UUID 和 clique ID
     // memcmp 返回 0 表示两个 UUID 相同
@@ -110,7 +114,8 @@ ncclResult_t ncclMnnvlCheck(struct ncclComm* comm) {
   // ========== 第五步: 检查 clique 大小 ==========
   // 如果 clique 中只有 1 个或更少的 GPU，MNNVL 没有意义
   // MNNVL 需要至少 2 个 GPU 才能进行通信
-  if (comm->clique.size <= 1) return ncclSuccess;
+  if (comm->clique.size <= 1) 
+    return ncclSuccess;
 
   // ========== 第六步: 验证 FABRIC 句柄的导入/导出功能 ==========
   // 通过实际分配和测试 FABRIC 内存，验证 IMEX (Import/Export) 通道是否正常工作

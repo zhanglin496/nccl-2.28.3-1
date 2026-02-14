@@ -21,7 +21,7 @@ NCCL_API(ncclResult_t, ncclMemAlloc, void **ptr, size_t size);
 //   ptr  - 输出：分配的内存指针
 //   size - 要分配的字节数
 // 返回：ncclResult_t - 操作结果状态码
-ncclResult_t  ncclMemAlloc(void **ptr, size_t size) {
+ncclResult_t ncclMemAlloc(void **ptr, size_t size) {
   NCCL_NVTX3_FUNC_RANGE;                               // NVTX 性能分析范围标记
   ncclResult_t ret = ncclSuccess;                      // 初始化返回值为成功
 
@@ -218,13 +218,16 @@ static void insertSegment(struct ncclSpace* a, int index, int64_t lo, int64_t hi
     if (a->capacity == 0) a->capacity = 16;          // 初始容量为 16
     // 分配新数组并复制数据
     int64_t* cuts1 = (int64_t*)malloc(a->capacity*sizeof(int64_t));
-    for (int i=0; i < index; i++) cuts1[i] = a->cuts[i];  // 复制 index 之前的数据
-    for (int i=index; i < a->count; i++) cuts1[i+2] = a->cuts[i]; // 复制 index 及之后的数据（偏移 2）
+    for (int i=0; i < index; i++) 
+        cuts1[i] = a->cuts[i];  // 复制 index 之前的数据
+    for (int i=index; i < a->count; i++) 
+        cuts1[i+2] = a->cuts[i]; // 复制 index 及之后的数据（偏移 2）
     free(a->cuts);                                   // 释放旧数组
     a->cuts = cuts1;                                  // 更新指针
   } else {
     // 原地移动数据（从后向前，避免覆盖）
-    for (int i=a->count-1; index <= i; i--) a->cuts[i+2] = a->cuts[i];
+    for (int i=a->count-1; index <= i; i--) 
+        a->cuts[i+2] = a->cuts[i];
   }
   // 设置新切割点
   a->cuts[index+0] = lo;                              // 段的起始位置

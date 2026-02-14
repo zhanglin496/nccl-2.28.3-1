@@ -246,14 +246,18 @@ ncclResult_t ncclNvlsInit(struct ncclComm* comm) {
 
   int gpuCount;  // GPU 数量变量
   NCCLCHECK(ncclTopoGetGpuCount(comm->topo, &gpuCount));  // 获取拓扑中的 GPU 数量
-  if (!ncclParamNvlsEnable() || gpuCount <= 2) return ncclSuccess;  // 如果 NVLS 未启用或 GPU 数量 <= 2，直接返回
+  if (!ncclParamNvlsEnable() || gpuCount <= 2) 
+    return ncclSuccess;  // 如果 NVLS 未启用或 GPU 数量 <= 2，直接返回
 
   CUdevice dev;  // CUDA 设备变量
   int driverVersion;  // 驱动版本变量
 
-  if (CUPFN(cuDeviceGet) == NULL) return ncclSuccess;  // 如果 CUDA API 不可用，直接返回
+  if (CUPFN(cuDeviceGet) == NULL) 
+    return ncclSuccess;  // 如果 CUDA API 不可用，直接返回
+    
   CUCHECK(cuCtxGetDevice(&dev));  // 获取当前 CUDA 设备
   CUDACHECK(cudaDriverGetVersion(&driverVersion));  // 获取驱动版本
+  
   if (ncclParamNvlsEnable() == 2) {  // 如果 NVLS_ENABLE == 2（自动检测模式）
     // NVLS Multicast support requires CUDA12.1 UMD + KMD
     // NVLS 多播支持需要 CUDA 12.1 用户模式驱动 + 内核模式驱动
@@ -289,6 +293,7 @@ ncclResult_t ncclNvlsInit(struct ncclComm* comm) {
     } else {  // 对于其他架构（Hopper 等）
       channels = NVLS_NCHANNELS_SM90;  // 使用 SM90 的通道数
     }
+    
     if (comm->config.nvlsCTAs != NCCL_CONFIG_UNDEF_INT)  // 如果用户配置了 NVLS CTA 数量
         channels = comm->config.nvlsCTAs;  // 使用用户配置的通道数
     comm->nvlsChannels = std::max(comm->config.minCTAs, std::min(comm->config.maxCTAs, channels));  // 将通道数限制在配置的 min 和 max 之间

@@ -852,8 +852,8 @@ struct ncclComm {
   // 比如 011，表示通道 0，1 有效
   //每个rank 分配8个字节，最多表示64个通道
   //|8byte|8byte|...|
-  uint64_t* connectSend;  // 发送连接位掩码数组
-  uint64_t* connectRecv;  // 接收连接位掩码数组
+  uint64_t* connectSend;  // 发送连接位通道id掩码数组
+  uint64_t* connectRecv;  // 接收连接位通道id掩码数组
 
   // 对应每个通信算法，生成一个通信图
   struct ncclTopoGraph graphs[NCCL_NUM_ALGORITHMS];
@@ -888,9 +888,10 @@ struct ncclComm {
   // 这是 NVML 设备索引，即 GPU 在 NVML 下枚举中的编号（0, 1, 2, ...）。
   int nvmlDev; // my nvml device index
 
-  // gpu 的计算能力，通过调用 ncclCudaCompCap
+  // 当前gpu的计算能力，通过调用 ncclCudaCompCap获取
   // 计算出的一个整数值
   int compCap; // compute capability of the GPU
+  
   // 通信器中所有 GPU 的最小/最大计算能力
   int minCompCap, maxCompCap; // min/max compute capability in the communicator
 

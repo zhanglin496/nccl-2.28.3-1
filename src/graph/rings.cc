@@ -39,7 +39,8 @@ ncclResult_t ncclBuildRings(int nrings, int* rings, int rank, int nranks, int* p
       current = next[r*nranks+current];
     }
     snprintf(prefix, sizeof(prefix), "Channel %02d/%02d :", r, nrings);
-    if (rank == 0) dumpLine(rings+r*nranks, nranks, prefix);
+    if (rank == 0) 
+        dumpLine(rings+r*nranks, nranks, prefix);
     if (current != rank) {
       WARN("Error : ring %d does not loop back to start (%d != %d)", r, current, rank);
       return ncclInternalError;
